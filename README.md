@@ -1,7 +1,7 @@
 # Animal Social Behavior Inference
 
 Video-based animal behavior classification using TimeSformer and Swin3D backbones.  
-Pretrained models are available on HuggingFace: [yiheng266/animal-social-models](https://huggingface.co/yiheng266/animal-social-models)
+Pretrained models are available on HuggingFace: [yiheng226/animal-social-models](https://huggingface.co/yiheng226/animal-social-models)
 
 ---
 
@@ -9,8 +9,8 @@ Pretrained models are available on HuggingFace: [yiheng266/animal-social-models]
 
 | Notebook | Description | |
 |----------|-------------|---|
-| `inference.ipynb` | Load a model and run behavior inference on your videos | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yiheng266/open-animal-behavior/blob/main/inference.ipynb) |
-| `training.ipynb` | Fine-tune a pretrained model on your own labeled videos | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yiheng266/open-animal-behavior/blob/main/training.ipynb) |
+| `inference.ipynb` | Load a model and run behavior inference on your videos | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yiheng226/open-animal-behavior/blob/main/inference.ipynb) |
+| `training.ipynb` | Fine-tune a pretrained model on your own labeled videos | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yiheng226/open-animal-behavior/blob/main/training.ipynb) |
 
 ---
 
@@ -89,5 +89,5 @@ print(result["frame_labels"])
 Download from HuggingFace:
 ```python
 from huggingface_hub import hf_hub_download
-pth = hf_hub_download("yiheng266/animal-social-models", "your_model/model.pth")
+pth = hf_hub_download("yiheng226/animal-social-models", "your_model/model.pth")
 ```

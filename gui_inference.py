@@ -20,7 +20,7 @@ from config_utils import normalize_config, find_config_for_pth
 from inference import preprocess, infer_video_gen, remap_with_disabled, get_others_idx
 
 # ==================== 👇 修改這裡 👇 ====================
-HF_REPO_ID         = "yiheng266/animal-social-models"
+HF_REPO_ID         = "yiheng226/animal-social-models"
 DEFAULT_VIDEO_DIR  = "/content/drive/My Drive/videos/"
 DEFAULT_OUTPUT_DIR = "/content/drive/My Drive/results/"
 DEFAULT_LOCAL_MODEL_DIRS = []
