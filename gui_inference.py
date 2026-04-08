@@ -316,6 +316,74 @@ def update_export_preview(fmt):
 
 # ====================== Display ======================
 
+def preview_frame(vdir, vf, fi):
+    """Get a frame from a video file directly (no inference needed)."""
+    if not vf or not vdir:
+        return None
+    vp = os.path.join(vdir, vf)
+    if not os.path.exists(vp):
+        return None
+    try:
+        if S.get("_preview_vf") != vf or S.get("_preview_vr") is None:
+            S["_preview_vr"] = VideoReader(vp, ctx=cpu(0))
+            S["_preview_vf"] = vf
+        vr = S["_preview_vr"]
+        fi = max(0, min(int(fi), len(vr) - 1))
+        return vr[fi].asnumpy()
+    except:
+        return None
+
+def preview_info_html(vdir, vf, fi):
+    """Frame info for preview mode (no inference labels)."""
+    if not vf or not vdir:
+        return "<p style='color:#aaa;'>Select a video to preview</p>"
+    # If we have inference results, use those
+    r = S["results"].get(vf)
+    if r:
+        return frame_info_html(vf, fi)
+    # Otherwise just show frame / time info
+    vp = os.path.join(vdir, vf)
+    if not os.path.exists(vp):
+        return "<p style='color:#aaa;'>Video not found</p>"
+    try:
+        if S.get("_preview_vf") != vf or S.get("_preview_vr") is None:
+            S["_preview_vr"] = VideoReader(vp, ctx=cpu(0))
+            S["_preview_vf"] = vf
+        vr = S["_preview_vr"]
+        T = len(vr); fps = vr.get_avg_fps(); fi = max(0, min(int(fi), T - 1))
+        return (f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                f"<span style='padding:4px 12px;border-radius:6px;background:rgba(180,180,180,0.7);color:white;font-size:13px;font-weight:600;'>Preview</span>"
+                f"<span style='font-size:12px;color:#666;'>F: {fi}/{T} | {fi/fps:.2f}s/{T/fps:.2f}s</span></div>")
+    except:
+        return "<p style='color:#aaa;'>Cannot read video</p>"
+
+def on_video_select(vdir, vf):
+    """When user selects a video from dropdown, show first frame + set scrubber."""
+    if not vf or not vdir:
+        return None, "<p style='color:#aaa;'>Select a video</p>", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+    # If we have inference results for this video, show full view
+    r = S["results"].get(vf)
+    if r:
+        S["cur"] = vf; S["vr"] = None; _update_cursor(vf)
+        T = r["total_frames"]
+        return (get_frame(vf, 0), frame_info_html(vf, 0),
+                gr.update(maximum=max(T - 1, 0), value=0),
+                html_timeline(vf), S["_cursor_data"])
+    # No results yet — just preview raw video
+    vp = os.path.join(vdir, vf)
+    if not os.path.exists(vp):
+        return None, "<p style='color:#aaa;'>Video not found</p>", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+    try:
+        vr = VideoReader(vp, ctx=cpu(0))
+        S["_preview_vr"] = vr; S["_preview_vf"] = vf
+        T = len(vr); fps = vr.get_avg_fps()
+        info = (f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                f"<span style='padding:4px 12px;border-radius:6px;background:rgba(180,180,180,0.7);color:white;font-size:13px;font-weight:600;'>Preview</span>"
+                f"<span style='font-size:12px;color:#666;'>F: 0/{T} | 0.00s/{T/fps:.2f}s</span></div>")
+        return vr[0].asnumpy(), info, gr.update(maximum=max(T - 1, 0), value=0), "", S["_cursor_data"]
+    except Exception as e:
+        return None, f"<p style='color:#aaa;'>Error: {e}</p>", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+
 def get_frame(vf, fi):
     r = S["results"].get(vf)
     if not r: return None
@@ -396,10 +464,17 @@ def run_batch(vdir):
                nav_md(), gr.update(maximum=max(T - 1, 0), value=0),
                S["_cursor_data"], "\n".join(blog))
 
-def on_scrub(fi):
+def on_scrub(fi, vdir, vf_sel):
+    fi = int(fi)
     vf = S["cur"]
-    if not vf or vf not in S["results"]: return None, "<p style='color:#aaa;'>Run inference first</p>"
-    return get_frame(vf, int(fi)), frame_info_html(vf, int(fi))
+    # If inference results exist, use them
+    if vf and vf in S["results"]:
+        return get_frame(vf, fi), frame_info_html(vf, fi)
+    # Otherwise, preview mode — use the currently selected video
+    preview_vf = vf_sel or S.get("_preview_vf")
+    if preview_vf and vdir:
+        return preview_frame(vdir, preview_vf, fi), preview_info_html(vdir, preview_vf, fi)
+    return None, "<p style='color:#aaa;'>Select a video to preview</p>"
 
 def do_nav(direction):
     d = S["done"]
@@ -488,17 +563,16 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME) as demo:
             model_st = gr.Textbox(label="Model status", interactive=False, lines=5)
             gr.Markdown("---")
             gr.Markdown("### ② Load video folder")
-            demo_btn = gr.Button("🎯 Load Demo", variant="primary", size="sm")
             vdir_in = gr.Textbox(label="Video folder path", value=DEFAULT_VIDEO_DIR)
+            demo_btn = gr.Button("🎯 Load Demo", variant="secondary", size="sm")
             load_folder_btn = gr.Button("📂 Load folder", variant="secondary")
             scan_st = gr.Textbox(label="Folder status", interactive=False, lines=1)
             gr.Markdown("---")
             gr.Markdown("### ③ Inference")
+            video_dd = gr.Dropdown(label="Select video", choices=[], interactive=True)
             batch_btn = gr.Button("📦 Batch inference (all videos)", variant="primary", size="lg")
             batch_log_tb = gr.Textbox(label="Batch log", interactive=False, lines=8)
-            with gr.Accordion("🎬 Run single video", open=False):
-                video_dd = gr.Dropdown(label="Select video", choices=[], interactive=True)
-                run_btn = gr.Button("🚀 Run inference (single)", variant="secondary")
+            run_btn = gr.Button("🚀 Run inference (single)", variant="secondary")
 
         with gr.Column(scale=2, min_width=400):
             toggle_label_html = gr.HTML("<p style='color:#aaa;font-size:13px;'>Load a model to see behaviors</p>")
@@ -533,13 +607,16 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME) as demo:
     demo_btn.click(load_demo_inference, [repo_in], [video_dd, scan_st, vdir_in])
     load_folder_btn.click(scan_videos, [vdir_in], [video_dd, scan_st])
 
+    # Video selection triggers preview (frame + scrubber setup)
+    video_dd.change(on_video_select, [vdir_in, video_dd], [frame_img, info_html, scrubber, timeline_html, cursor_state])
+
     out9 = [batch_prog, info_html, frame_img, timeline_html, behavior_html, exp_prev, nav_md_out, scrubber, cursor_state]
     out10 = out9 + [batch_log_tb]
 
     run_btn.click(run_single, [vdir_in, video_dd], out9)
     batch_btn.click(run_batch, [vdir_in], out10)
     scrubber.input(fn=None, inputs=[scrubber, cursor_state], outputs=[scrubber], js=CURSOR_JS)
-    scrubber.change(on_scrub, inputs=[scrubber], outputs=[frame_img, info_html])
+    scrubber.change(on_scrub, inputs=[scrubber, vdir_in, video_dd], outputs=[frame_img, info_html])
     prev_btn.click(lambda: do_nav("prev"), [], out9)
     next_btn.click(lambda: do_nav("next"), [], out9)
     exp_fmt.change(update_export_preview, [exp_fmt], [exp_prev])

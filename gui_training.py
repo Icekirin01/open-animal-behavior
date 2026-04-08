@@ -538,10 +538,10 @@ with gr.Blocks(title="Animal Behavior Training", theme=YELLOW_THEME) as demo:
             model_st = gr.Textbox(label="Status", interactive=False, lines=4)
             gr.Markdown("---")
             gr.Markdown("### ② Load data")
-            demo_btn_t = gr.Button("🎯 Load Demo", variant="primary", size="sm")
             vdir_in = gr.Textbox(label="Video directory", value=DEFAULT_VIDEO_DIR)
             ldir_in = gr.Textbox(label="Label directory", value=DEFAULT_LABEL_DIR)
             odir_in = gr.Textbox(label="Output directory", value=DEFAULT_OUTPUT_DIR)
+            demo_btn_t = gr.Button("🎯 Load Demo", variant="secondary", size="sm")
             scan_d = gr.Button("📂 Load folder", variant="secondary")
             scan_st = gr.Textbox(label="Folder status", interactive=False, lines=1)
 
