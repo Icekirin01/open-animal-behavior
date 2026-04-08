@@ -26,7 +26,7 @@ from training_utils import (
 )
 
 # ==================== 👇 修改這裡 👇 ====================
-HF_REPO_ID         = "yiheng226/animal-social-models"
+HF_REPO_ID         = "yiheng266/animal-social-models"
 DEFAULT_VIDEO_DIR  = "/content/drive/My Drive/videos/train/"
 DEFAULT_LABEL_DIR  = "/content/drive/My Drive/labels/train/"
 DEFAULT_OUTPUT_DIR = "/content/drive/My Drive/trained_models/"
