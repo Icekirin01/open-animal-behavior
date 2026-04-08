@@ -177,6 +177,36 @@ def on_toggle_change(enabled_behaviors):
         return f"⚠️ Disabled → Other: {[names[i] for i in sorted(disabled)]}"
     return "✅ All behaviors active"
 
+DEMO_LOCAL_DIR = os.path.join(os.path.expanduser("~"), "demo_data")
+
+def load_demo_inference(repo):
+    """Download all files from HF repo demo/ folder, only use videos for inference."""
+    if not repo:
+        return gr.update(choices=[], value=None), "❌ Specify repo", ""
+    try:
+        all_files = list_repo_files(repo)
+        demo_files = [f for f in all_files if f.startswith("demo/") and f != "demo/"]
+        if not demo_files:
+            return gr.update(choices=[], value=None), "❌ No files in demo/ folder", ""
+        os.makedirs(DEMO_LOCAL_DIR, exist_ok=True)
+        downloaded = []
+        for f in demo_files:
+            local = hf_hub_download(repo_id=repo, filename=f)
+            fname = os.path.basename(f)
+            dest = os.path.join(DEMO_LOCAL_DIR, fname)
+            if not os.path.exists(dest) or os.path.getsize(dest) != os.path.getsize(local):
+                import shutil; shutil.copy2(local, dest)
+            downloaded.append(fname)
+        # For inference: only list video files
+        videos = sorted([f for f in downloaded if f.lower().endswith((".mp4", ".avi", ".mov"))])
+        if not videos:
+            return gr.update(choices=[], value=None), f"⚠️ Downloaded {len(downloaded)} file(s) but no videos found", DEMO_LOCAL_DIR
+        return (gr.update(choices=videos, value=videos[0]),
+                f"✅ Demo loaded: {len(videos)} video(s) from {len(downloaded)} file(s)",
+                DEMO_LOCAL_DIR)
+    except Exception as e:
+        return gr.update(choices=[], value=None), f"❌ {e}", ""
+
 def scan_videos(vdir):
     if not vdir or not os.path.isdir(vdir):
         return gr.update(choices=[], value=None), "❌ Not found"
@@ -458,6 +488,7 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME) as demo:
             model_st = gr.Textbox(label="Model status", interactive=False, lines=5)
             gr.Markdown("---")
             gr.Markdown("### ② Load video folder")
+            demo_btn = gr.Button("🎯 Load Demo", variant="primary", size="sm")
             vdir_in = gr.Textbox(label="Video folder path", value=DEFAULT_VIDEO_DIR)
             load_folder_btn = gr.Button("📂 Load folder", variant="secondary")
             scan_st = gr.Textbox(label="Folder status", interactive=False, lines=1)
@@ -499,6 +530,7 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME) as demo:
     local_scan_btn.click(scan_local_models, [local_dir_in], [local_model_dd, model_st])
     local_load_btn.click(load_model_local, [local_dir_in, local_model_dd], [model_st, behavior_toggles, toggle_label_html])
     behavior_toggles.change(on_toggle_change, [behavior_toggles], [toggle_status])
+    demo_btn.click(load_demo_inference, [repo_in], [video_dd, scan_st, vdir_in])
     load_folder_btn.click(scan_videos, [vdir_in], [video_dd, scan_st])
 
     out9 = [batch_prog, info_html, frame_img, timeline_html, behavior_html, exp_prev, nav_md_out, scrubber, cursor_state]

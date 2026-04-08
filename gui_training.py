@@ -207,6 +207,33 @@ def build_label_dist_html():
     h += "</div>"
     return h
 
+DEMO_LOCAL_DIR = os.path.join(os.path.expanduser("~"), "demo_data")
+
+def load_demo_training(repo):
+    """Download all files from HF repo demo/ folder, split into videos & labels dirs."""
+    if not repo:
+        return "❌ Specify repo", "", ""
+    try:
+        all_files = list_repo_files(repo)
+        demo_files = [f for f in all_files if f.startswith("demo/") and f != "demo/"]
+        if not demo_files:
+            return "❌ No files in demo/ folder", "", ""
+        os.makedirs(DEMO_LOCAL_DIR, exist_ok=True)
+        downloaded = []
+        for f in demo_files:
+            local = hf_hub_download(repo_id=repo, filename=f)
+            fname = os.path.basename(f)
+            dest = os.path.join(DEMO_LOCAL_DIR, fname)
+            if not os.path.exists(dest) or os.path.getsize(dest) != os.path.getsize(local):
+                import shutil; shutil.copy2(local, dest)
+            downloaded.append(fname)
+        n_vid = len([f for f in downloaded if f.lower().endswith((".mp4", ".avi", ".mov"))])
+        n_csv = len([f for f in downloaded if f.lower().endswith(".csv")])
+        return (f"✅ Demo loaded: {len(downloaded)} file(s) ({n_vid} video, {n_csv} csv)",
+                DEMO_LOCAL_DIR, DEMO_LOCAL_DIR)
+    except Exception as e:
+        return f"❌ {e}", "", ""
+
 # ====================== Data Scanning ======================
 
 def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
@@ -511,6 +538,7 @@ with gr.Blocks(title="Animal Behavior Training", theme=YELLOW_THEME) as demo:
             model_st = gr.Textbox(label="Status", interactive=False, lines=4)
             gr.Markdown("---")
             gr.Markdown("### ② Load data")
+            demo_btn_t = gr.Button("🎯 Load Demo", variant="primary", size="sm")
             vdir_in = gr.Textbox(label="Video directory", value=DEFAULT_VIDEO_DIR)
             ldir_in = gr.Textbox(label="Label directory", value=DEFAULT_LABEL_DIR)
             odir_in = gr.Textbox(label="Output directory", value=DEFAULT_OUTPUT_DIR)
@@ -562,6 +590,7 @@ with gr.Blocks(title="Animal Behavior Training", theme=YELLOW_THEME) as demo:
     # ===== WIRING =====
     demo.load(list_models, [repo_in], [model_dd, model_st])
     load_btn.click(load_pretrained, [repo_in, model_dd], [model_st])
+    demo_btn_t.click(load_demo_training, [repo_in], [scan_st, vdir_in, ldir_in])
 
     scan_outputs = [scan_st, label_dist_html, nav_md, *map_dds, vid_dd,
                     frame_img, info_html, timeline_html, scrubber, cursor_state, vid_list_html, mapping_summary]
