@@ -273,19 +273,96 @@ def get_clr(i,name):
 
 # ====================== Model Management ======================
 
-def list_models(repo):
-    try:
-        files=list_repo_files(repo)
-        pths=[f for f in files if f.endswith("/model.pth") or f=="model.pth"]
-        if not pths: pths=[f for f in files if f.endswith(".pth")]
-        if not pths: return gr.update(choices=[],value=None),"❌ No models found"
-        names=[os.path.dirname(p) if "/" in p else p for p in pths]
-        return gr.update(choices=names,value=names[0]),f"✅ {len(names)} model(s) found"
-    except Exception as e: return gr.update(choices=[],value=None),f"❌ {e}"
+# Built-in backbones — no HF repo download needed.
+# Weights are fetched from torchvision / huggingface-transformers cache the first
+# time the backbone class is instantiated, then reused from local cache.
+BUILTIN_MODELS = {
+    "[BUILTIN] Swin3D-T (K400)": {
+        "backbone": {
+            "name": "CustomSwin3D",
+            "source": "torchvision",
+            "pretrained": "Swin3D_T_Weights.DEFAULT",
+            "hidden_size": 768,
+            "num_frames": 16,
+            "input_size": 224,
+        },
+        "head": {
+            "type": "MLPHead", "in_features": 768, "hidden_dim": 512,
+            "dropout": 0.3, "activation": "ReLU", "norm": "LayerNorm",
+            "pool": "temporal_mean",
+        },
+        "num_classes": 0,
+        "class_names": [],
+        "input_format": {
+            "shape": "(B, C, T, H, W)", "C": 3, "T": 16, "H": 224, "W": 224,
+            "normalize": {"mean":[0.485,0.456,0.406],"std":[0.229,0.224,0.225]},
+        },
+    },
+    "[BUILTIN] TimeSformer-B (K400)": {
+        "backbone": {
+            "name": "TimesformerModel",
+            "source": "huggingface",
+            "pretrained": "facebook/timesformer-base-finetuned-k400",
+            "hidden_size": 768,
+            "num_frames": 8,
+            "input_size": 224,
+        },
+        "head": {
+            "type": "MLPHead", "in_features": 768, "hidden_dim": 512,
+            "dropout": 0.3, "activation": "ReLU", "norm": "LayerNorm",
+            "pool": "cls_token",
+        },
+        "num_classes": 0,
+        "class_names": [],
+        "input_format": {
+            "shape": "(B, C, T, H, W)", "C": 3, "T": 8, "H": 224, "W": 224,
+            "normalize": {"mean":[0.485,0.456,0.406],"std":[0.229,0.224,0.225]},
+        },
+    },
+}
 
-def load_pretrained(repo,mname):
-    if not mname or not repo: return "❌ Specify repo & model"
+def list_models(repo):
+    builtin_names = list(BUILTIN_MODELS.keys())
+    hf_names = []
+    hf_err = None
     try:
+        files = list_repo_files(repo)
+        pths = [f for f in files if f.endswith("/model.pth") or f == "model.pth"]
+        if not pths: pths = [f for f in files if f.endswith(".pth")]
+        hf_names = [os.path.dirname(p) if "/" in p else p for p in pths]
+    except Exception as e:
+        hf_err = str(e)
+    names = builtin_names + hf_names
+    msg = f"✅ {len(builtin_names)} builtin + {len(hf_names)} HF model(s)"
+    if hf_err: msg += f"  (HF list failed: {hf_err})"
+    return gr.update(choices=names, value=names[0] if names else None), msg
+
+def load_pretrained(repo, mname):
+    if not mname: return "❌ Select a model first"
+    try:
+        # ----- Built-in path: build fresh from local torchvision / HF cache -----
+        if mname in BUILTIN_MODELS:
+            import copy as _copy
+            cfg = _copy.deepcopy(BUILTIN_MODELS[mname])
+            # build_model needs a valid num_classes (>=1) to construct the head.
+            # We use a throwaway value of 1; rebuild_head() at train time will
+            # replace the head with the correct new_nc from the user's data.
+            cfg["num_classes"] = 1
+            model = build_model(cfg)
+            model.to(device)
+            # Clear class_names / num_classes so the GUI forces "New head" logic
+            # (compute_label_map_from_dropdowns falls back to new-head branch
+            # when pretrained_names is empty).
+            cfg["num_classes"] = 0
+            cfg["class_names"] = []
+            S.update({"model": model, "cfg": cfg, "train_log": []})
+            return (f"✅ Loaded: {mname}\n"
+                    f"  Backbone: {cfg['backbone']['name']}\n"
+                    f"  No pretrained head — use 'New head' mode\n"
+                    f"  Device: {device}")
+
+        # ----- HF repo path (existing behaviour) -----
+        if not repo: return "❌ Specify repo for HF model"
         if not mname.endswith(".pth"): cf=f"{mname}/config.json"; pf=f"{mname}/model.pth"
         else: cf="config.json"; pf=mname
         with open(hf_hub_download(repo_id=repo,filename=cf)) as f: cfg=json.load(f)
