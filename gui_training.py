@@ -124,6 +124,48 @@ def temporal_dropout(frames,frac=0.15,rng=None):
     for i in idxs: out[i]=out[i-1] if rng.random()<0.5 else out[i+1]
     return out
 
+def horizontal_flip(frames,prob=0.5,rng=None):
+    """Roboflow-style horizontal flip. Applied to the whole window (all frames) consistently."""
+    if prob<=0 or not frames: return frames
+    rng=rng or random
+    if rng.random()<prob:
+        return [f.transpose(Image.FLIP_LEFT_RIGHT) for f in frames]
+    return frames
+
+def vertical_flip(frames,prob=0.5,rng=None):
+    """Roboflow-style vertical flip. Applied to the whole window (all frames) consistently."""
+    if prob<=0 or not frames: return frames
+    rng=rng or random
+    if rng.random()<prob:
+        return [f.transpose(Image.FLIP_TOP_BOTTOM) for f in frames]
+    return frames
+
+def random_rotation(frames,max_deg=0.0,rng=None):
+    """Rotate the whole window by the same random angle in [-max_deg, +max_deg]."""
+    if max_deg<=0 or not frames: return frames
+    rng=rng or random
+    ang=rng.uniform(-max_deg,max_deg)
+    if abs(ang)<0.1: return frames
+    return [f.rotate(ang,resample=Image.BILINEAR) for f in frames]
+
+def color_jitter(frames,brightness=0.0,contrast=0.0,saturation=0.0,rng=None):
+    """Roboflow-style brightness/contrast/saturation jitter. Same factor applied to every frame in the window."""
+    if not frames: return frames
+    if brightness<=0 and contrast<=0 and saturation<=0: return frames
+    from PIL import ImageEnhance
+    rng=rng or random
+    out=frames
+    if brightness>0:
+        f=1.0+rng.uniform(-brightness,brightness)
+        out=[ImageEnhance.Brightness(x).enhance(f) for x in out]
+    if contrast>0:
+        f=1.0+rng.uniform(-contrast,contrast)
+        out=[ImageEnhance.Contrast(x).enhance(f) for x in out]
+    if saturation>0:
+        f=1.0+rng.uniform(-saturation,saturation)
+        out=[ImageEnhance.Color(x).enhance(f) for x in out]
+    return out
+
 # ====================== BORIS Label Parsing ======================
 # BORIS export format: one row per START/STOP event.
 # Key columns: Behavior, Behavior type (START/STOP), Time (seconds), FPS.
@@ -910,11 +952,21 @@ def build_val_html(log,names):
 # ====================== Training ======================
 
 def run_training(repo,mname,vdir,ldir,odir,head_mode,
-                 n_epochs,batch_sz,lr_str,val_pct,ws,stride_val,val_seed,train_seed,*dd_vals):
+                 n_epochs,batch_sz,lr_str,val_pct,ws,stride_val,val_seed,train_seed,
+                 aug_blur_frac,aug_tdrop_frac,aug_hflip_p,aug_vflip_p,
+                 aug_rot_deg,aug_brightness,aug_contrast,aug_saturation,
+                 aug_offline_mult,aug_excluded_classes,
+                 *dd_vals):
     try:
         lr=float(lr_str); val_ratio=float(val_pct)/100.0; n_epochs=int(n_epochs)
         batch_sz=int(batch_sz); ws=int(ws); stride_val=int(stride_val)
         val_seed=int(val_seed); train_seed=int(train_seed)
+        aug_blur_frac=float(aug_blur_frac); aug_tdrop_frac=float(aug_tdrop_frac)
+        aug_hflip_p=float(aug_hflip_p); aug_vflip_p=float(aug_vflip_p)
+        aug_rot_deg=float(aug_rot_deg); aug_brightness=float(aug_brightness)
+        aug_contrast=float(aug_contrast); aug_saturation=float(aug_saturation)
+        aug_offline_mult=int(aug_offline_mult)
+        aug_excluded_classes=list(aug_excluded_classes) if aug_excluded_classes else []
     except Exception as e: yield f"❌ Invalid params: {e}",U; return
 
     if not S["model"] or not S["cfg"]: yield "❌ Load model first",U; return
@@ -945,15 +997,59 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
 
     yield html_progress(0,n_epochs,0,0,"building dataset..."),"<p style='color:#aaa;'>Building...</p>"
 
-    aug_rng=random.Random(train_seed)
-    def aug(fr): return temporal_dropout(random_blur(fr,rng=aug_rng),rng=aug_rng)
+    # Online augmentation: uses the `random` module globally so each DataLoader
+    # worker (seeded via worker_init_fn below) gets its own stream, and every
+    # epoch re-draws independently. This is the standard PyTorch pattern.
+    def aug(fr):
+        # Spatial (whole-window consistent) first, then photometric, then per-frame
+        fr=horizontal_flip(fr,prob=aug_hflip_p)
+        fr=vertical_flip(fr,prob=aug_vflip_p)
+        fr=random_rotation(fr,max_deg=aug_rot_deg)
+        fr=color_jitter(fr,brightness=aug_brightness,contrast=aug_contrast,saturation=aug_saturation)
+        fr=random_blur(fr,frac=aug_blur_frac)
+        fr=temporal_dropout(fr,frac=aug_tdrop_frac)
+        return fr
 
     train_ds=SlidingWindowDataset([vps[i] for i in tidx],[lps[i] for i in tidx],ws,stride_val,cfg,new_nc,label_map,augment=aug)
     val_ds=SlidingWindowDataset([vps[i] for i in vidx],[lps[i] for i in vidx],ws,stride_val,cfg,new_nc,label_map) if vidx else None
 
     if len(train_ds)==0: yield "❌ No training windows created.",""; return
 
-    train_loader=DataLoader(train_ds,batch_sz,shuffle=True,num_workers=4,pin_memory=True)
+    # ----- Offline augmentation: duplicate entries in samples list for selected classes -----
+    if aug_offline_mult > 1:
+        excluded_idx = set()
+        for cname in aug_excluded_classes:
+            if cname in new_names:
+                excluded_idx.add(new_names.index(cname))
+        orig_samples = train_ds.samples[:]
+        orig_labels = train_ds.sample_labels[:]
+        n_before = len(orig_samples)
+        extra_samples = []
+        extra_labels = []
+        n_duplicated = 0
+        for s, l in zip(orig_samples, orig_labels):
+            if l in excluded_idx:
+                continue
+            # add (mult - 1) extra copies; the original already counts as 1
+            for _ in range(aug_offline_mult - 1):
+                extra_samples.append(s)
+                extra_labels.append(l)
+            n_duplicated += 1
+        train_ds.samples = orig_samples + extra_samples
+        train_ds.sample_labels = orig_labels + extra_labels
+        print(f"📈 Offline aug: {n_before} → {len(train_ds.samples)} windows "
+              f"(×{aug_offline_mult} for {n_duplicated} non-excluded windows, "
+              f"excluded classes: {aug_excluded_classes or 'none'})")
+
+    # Reproducible shuffle + per-worker seeding for true per-epoch randomness
+    g = torch.Generator(); g.manual_seed(train_seed)
+    def _worker_init(worker_id):
+        seed = train_seed + worker_id
+        random.seed(seed)
+        np.random.seed(seed % (2**32))
+
+    train_loader=DataLoader(train_ds,batch_sz,shuffle=True,num_workers=4,pin_memory=True,
+                            generator=g,worker_init_fn=_worker_init)
     val_loader=DataLoader(val_ds,batch_sz,shuffle=False,num_workers=4,pin_memory=True) if val_ds and len(val_ds)>0 else None
     total_win=len(train_ds)
 
@@ -1029,6 +1125,18 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                 "epochs": n_epochs, "batch_size": batch_sz, "lr": lr,
                 "window_size": ws, "stride": stride_val,
                 "val_seed": val_seed, "train_seed": train_seed,
+            },
+            "augmentation": {
+                "blur_frac": aug_blur_frac,
+                "temporal_dropout_frac": aug_tdrop_frac,
+                "horizontal_flip_prob": aug_hflip_p,
+                "vertical_flip_prob": aug_vflip_p,
+                "rotation_deg": aug_rot_deg,
+                "brightness": aug_brightness,
+                "contrast": aug_contrast,
+                "saturation": aug_saturation,
+                "offline_multiplier": aug_offline_mult,
+                "offline_excluded_classes": aug_excluded_classes,
             },
         }
         cfg_path = mp.replace(".pth", "_config.json")
@@ -1164,6 +1272,43 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
             with gr.Row():
                 val_seed_in=gr.Number(label="Val seed",value=1337,precision=0,info="Split reproducibility")
                 train_seed_in=gr.Number(label="Train seed",value=2025,precision=0,info="Augmentation reproducibility")
+
+            with gr.Accordion("🎨 Augmentation", open=False):
+                gr.Markdown("**Spatial** — applied to the whole window consistently")
+                aug_hflip_in=gr.Slider(minimum=0,maximum=1,step=0.05,value=0.5,
+                                       label="Horizontal flip probability",
+                                       info="0 = off, 0.5 = flip half the windows")
+                aug_vflip_in=gr.Slider(minimum=0,maximum=1,step=0.05,value=0.0,
+                                       label="Vertical flip probability",
+                                       info="Usually 0 for animal behavior (up/down matters)")
+                aug_rot_in=gr.Slider(minimum=0,maximum=30,step=1,value=0,
+                                     label="Rotation (± degrees)",
+                                     info="0 = off. Each window rotated by a random angle in this range")
+
+                gr.Markdown("**Photometric** — same factor per window")
+                aug_brightness_in=gr.Slider(minimum=0,maximum=0.5,step=0.05,value=0.0,
+                                            label="Brightness jitter (±)",info="0 = off")
+                aug_contrast_in=gr.Slider(minimum=0,maximum=0.5,step=0.05,value=0.0,
+                                          label="Contrast jitter (±)",info="0 = off")
+                aug_saturation_in=gr.Slider(minimum=0,maximum=0.5,step=0.05,value=0.0,
+                                            label="Saturation jitter (±)",info="0 = off")
+
+                gr.Markdown("**Per-frame** — random subset of frames in each window")
+                aug_blur_in=gr.Slider(minimum=0,maximum=1,step=0.05,value=0.35,
+                                      label="Random blur fraction",
+                                      info="Fraction of frames to Gaussian-blur. 0 = off")
+                aug_tdrop_in=gr.Slider(minimum=0,maximum=0.5,step=0.05,value=0.15,
+                                       label="Temporal dropout fraction",
+                                       info="Fraction of frames replaced by a neighbor. 0 = off")
+
+                gr.Markdown("**Offline augmentation** — multiply dataset size (Roboflow-style class balancing)")
+                aug_offline_mult_in=gr.Slider(minimum=1,maximum=10,step=1,value=1,
+                                              label="Copies per window",
+                                              info="1 = off. 3 = each window trained on 3× per epoch with different aug each time")
+                aug_excluded_in=gr.CheckboxGroup(choices=[],value=[],
+                                                 label="Do NOT multiply these classes",
+                                                 info="Typically exclude majority classes like 'Other' to balance the dataset. Updates when you change label mapping.")
+
             train_btn=gr.Button("🚀 Start training",variant="primary",size="lg")
             gr.Markdown("---")
             gr.Markdown("### ④ Validation results")
@@ -1178,11 +1323,32 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
     scan_outputs = [scan_st, label_dist_html, nav_md, *map_dds, vid_dd,
                     frame_img, info_html, timeline_html, scrubber, cursor_state, vid_list_html, mapping_summary]
 
+    # Offline-aug excluded-classes checkbox: keep choices in sync with current
+    # training classes (new_names). Defined here so scan_d.click().then(...) below can reference it.
+    def _update_excluded_choices(head_mode, *dd_vals):
+        data_labels = S["label_names"]
+        pretrained_names = S["cfg"]["class_names"] if S["cfg"] else []
+        if not data_labels:
+            return gr.update(choices=[], value=[])
+        vals = list(dd_vals[:len(data_labels)])
+        new_names, _ = compute_label_map_from_dropdowns(head_mode, vals, data_labels, pretrained_names)
+        prev = dd_vals[-1] if dd_vals else []
+        prev = list(prev) if prev else []
+        # Default: pre-select "Other"/"others" if present (most common use case)
+        default_excluded = [n for n in new_names if n.lower() in ("other","others")]
+        kept = [v for v in prev if v in new_names]
+        value = kept if kept else default_excluded
+        return gr.update(choices=list(new_names), value=value)
+
     # Demo button → download from HF + auto-scan (same outputs as Load folder, paths stay untouched)
-    demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs)
+    demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
+                   ).then(_update_excluded_choices,
+                          [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
 
     # Load folder → scan user's own directories
-    scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs)
+    scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
+                 ).then(_update_excluded_choices,
+                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
 
     # Head mode change → rebuild all mapping dropdowns + timeline + summary
     map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
@@ -1191,6 +1357,13 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
     # Any mapping dropdown change → rebuild others + timeline + summary
     for dd in map_dds:
         dd.change(on_mapping_change, [head_mode_dd, *map_dds], map_change_outputs)
+
+    # Keep excluded-classes checkbox in sync on mapping / head-mode changes
+    head_mode_dd.change(_update_excluded_choices,
+                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+    for dd in map_dds:
+        dd.change(_update_excluded_choices,
+                  [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
 
     # Val ratio or val seed change → recompute split
     vr_in.change(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
@@ -1213,7 +1386,11 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
     # Training — pass head_mode + all mapping dropdowns instead of label_cb
     train_btn.click(run_training,
                     [repo_in,model_dd,vdir_in,ldir_in,odir_in,head_mode_dd,
-                     ep_in,bs_in,lr_in,vr_in,ws_in,st_in,val_seed_in,train_seed_in,*map_dds],
+                     ep_in,bs_in,lr_in,vr_in,ws_in,st_in,val_seed_in,train_seed_in,
+                     aug_blur_in,aug_tdrop_in,aug_hflip_in,aug_vflip_in,
+                     aug_rot_in,aug_brightness_in,aug_contrast_in,aug_saturation_in,
+                     aug_offline_mult_in,aug_excluded_in,
+                     *map_dds],
                     [progress_html,val_html])
 
 demo.launch(debug=True,share=True)
