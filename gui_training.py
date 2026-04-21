@@ -978,12 +978,8 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                  num_workers,
                  aug_blur_frac,aug_tdrop_frac,aug_hflip_p,aug_vflip_p,
                  aug_rot_deg,aug_brightness,aug_contrast,aug_saturation,
+                 aug_mult,aug_excluded_classes,
                  *dd_vals):
-    # Offline-augmentation is currently disabled in the UI to keep training fast
-    # on memory-limited machines. The dataset-duplication logic below still
-    # works if you wire these parameters back to a UI control.
-    aug_offline_mult = 1
-    aug_excluded_classes: list = []
     try:
         lr=float(lr_str); val_ratio=float(val_pct)/100.0; n_epochs=int(n_epochs)
         batch_sz=int(batch_sz); ws=int(ws); stride_val=int(stride_val)
@@ -993,6 +989,8 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
         aug_hflip_p=float(aug_hflip_p); aug_vflip_p=float(aug_vflip_p)
         aug_rot_deg=float(aug_rot_deg); aug_brightness=float(aug_brightness)
         aug_contrast=float(aug_contrast); aug_saturation=float(aug_saturation)
+        aug_mult=int(aug_mult)
+        aug_excluded_classes=list(aug_excluded_classes) if aug_excluded_classes else []
     except Exception as e: yield f"❌ Invalid params: {e}",U; return
 
     if not S["model"] or not S["cfg"]: yield "❌ Load model first",U; return
@@ -1041,8 +1039,13 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
 
     if len(train_ds)==0: yield "❌ No training windows created.",""; return
 
-    # ----- Offline augmentation: duplicate entries in samples list for selected classes -----
-    if aug_offline_mult > 1:
+    # ----- Class balancing: duplicate sample-list entries for selected classes -----
+    # Note: only the (video_path, frame_indices, label) tuples are duplicated —
+    # not the actual frames. Each time the same window is drawn by the DataLoader,
+    # online augmentation re-rolls independently, producing different augmented
+    # results. Effect is equivalent to offline augmentation but costs no disk
+    # and almost no RAM; only cost is that epoch time scales with the multiplier.
+    if aug_mult > 1:
         excluded_idx = set()
         for cname in aug_excluded_classes:
             if cname in new_names:
@@ -1057,14 +1060,14 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
             if l in excluded_idx:
                 continue
             # add (mult - 1) extra copies; the original already counts as 1
-            for _ in range(aug_offline_mult - 1):
+            for _ in range(aug_mult - 1):
                 extra_samples.append(s)
                 extra_labels.append(l)
             n_duplicated += 1
         train_ds.samples = orig_samples + extra_samples
         train_ds.sample_labels = orig_labels + extra_labels
-        print(f"📈 Offline aug: {n_before} → {len(train_ds.samples)} windows "
-              f"(×{aug_offline_mult} for {n_duplicated} non-excluded windows, "
+        print(f"📈 Class balancing: {n_before} → {len(train_ds.samples)} windows "
+              f"(×{aug_mult} for {n_duplicated} non-excluded windows, "
               f"excluded classes: {aug_excluded_classes or 'none'})")
 
     # Reproducible shuffle + per-worker seeding for true per-epoch randomness
@@ -1167,6 +1170,8 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                 "brightness": aug_brightness,
                 "contrast": aug_contrast,
                 "saturation": aug_saturation,
+                "class_multiplier": aug_mult,
+                "class_multiplier_excluded": aug_excluded_classes,
             },
         }
         cfg_path = mp.replace(".pth", "_config.json")
@@ -1334,6 +1339,14 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
                                        label="Temporal dropout fraction",
                                        info="Fraction of frames replaced by a neighbor. 0 = off")
 
+                gr.Markdown("**Class balancing** — show selected classes more often per epoch")
+                aug_mult_in=gr.Slider(minimum=1,maximum=10,step=1,value=1,
+                                      label="Copies per window",
+                                      info="1 = off. 3 = each window seen 3× per epoch, each pass with fresh online augmentation. Epoch time scales linearly.")
+                aug_excluded_in=gr.CheckboxGroup(choices=[],value=[],
+                                                 label="Do NOT multiply these classes",
+                                                 info="Typically exclude majority classes like 'Other' so minority classes become relatively more frequent. Updates when you change label mapping.")
+
             train_btn=gr.Button("🚀 Start training",variant="primary",size="lg")
             gr.Markdown("---")
             gr.Markdown("### ④ Validation results")
@@ -1348,11 +1361,31 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
     scan_outputs = [scan_st, label_dist_html, nav_md, *map_dds, vid_dd,
                     frame_img, info_html, timeline_html, scrubber, cursor_state, vid_list_html, mapping_summary]
 
+    # Class-balancing excluded-classes checkbox: keep choices in sync with current
+    # training classes (new_names). Defined early so scan_d.click().then(...) can reference it.
+    def _update_excluded_choices(head_mode, *dd_vals):
+        data_labels = S["label_names"]
+        pretrained_names = S["cfg"]["class_names"] if S["cfg"] else []
+        if not data_labels:
+            return gr.update(choices=[], value=[])
+        vals = list(dd_vals[:len(data_labels)])
+        new_names, _ = compute_label_map_from_dropdowns(head_mode, vals, data_labels, pretrained_names)
+        prev = dd_vals[-1] if dd_vals else []
+        prev = list(prev) if prev else []
+        default_excluded = [n for n in new_names if n.lower() in ("other","others")]
+        kept = [v for v in prev if v in new_names]
+        value = kept if kept else default_excluded
+        return gr.update(choices=list(new_names), value=value)
+
     # Demo button → download from HF + auto-scan (same outputs as Load folder, paths stay untouched)
-    demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs)
+    demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
+                   ).then(_update_excluded_choices,
+                          [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
 
     # Load folder → scan user's own directories
-    scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs)
+    scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
+                 ).then(_update_excluded_choices,
+                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
 
     # Head mode change → rebuild all mapping dropdowns + timeline + summary
     map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
@@ -1361,6 +1394,13 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
     # Any mapping dropdown change → rebuild others + timeline + summary
     for dd in map_dds:
         dd.change(on_mapping_change, [head_mode_dd, *map_dds], map_change_outputs)
+
+    # Keep excluded-classes checkbox in sync on mapping / head-mode changes
+    head_mode_dd.change(_update_excluded_choices,
+                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+    for dd in map_dds:
+        dd.change(_update_excluded_choices,
+                  [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
 
     # Val ratio or val seed change → recompute split
     vr_in.change(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
@@ -1387,6 +1427,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
                      nw_in,
                      aug_blur_in,aug_tdrop_in,aug_hflip_in,aug_vflip_in,
                      aug_rot_in,aug_brightness_in,aug_contrast_in,aug_saturation_in,
+                     aug_mult_in,aug_excluded_in,
                      *map_dds],
                     [progress_html,val_html])
 
