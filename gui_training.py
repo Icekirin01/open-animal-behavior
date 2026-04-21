@@ -104,10 +104,15 @@ def uniform_sample(frames,t):
     if n<t: return frames+[frames[-1]]*(t-n)
     return [frames[i] for i in np.linspace(0,n-1,t,dtype=int)]
 
-def preprocess(frames,cfg):
+def preprocess(frames,cfg,skip_resize=False):
+    """Convert PIL frames → normalized tensor (C, T, H, W).
+
+    If skip_resize=True, assumes frames are already at the target size (faster,
+    when augmentation has already resized them).
+    """
     sz=cfg["backbone"]["input_size"]; nf=cfg["backbone"]["num_frames"]
     m=cfg["input_format"]["normalize"]["mean"]; s=cfg["input_format"]["normalize"]["std"]
-    r=[f.resize((sz,sz),Image.BILINEAR) for f in frames]
+    r=frames if skip_resize else [f.resize((sz,sz),Image.BILINEAR) for f in frames]
     if len(r)!=nf: r=uniform_sample(r,nf)
     v=torch.stack([ToTensor()(f) for f in r],0)
     return ((v-torch.tensor(m).view(1,-1,1,1))/torch.tensor(s).view(1,-1,1,1)).permute(1,0,2,3)
@@ -272,9 +277,29 @@ def load_label_data(lp, total_frames, video_fps):
 
 # ====================== Dataset ======================
 
+# Per-process cache of VideoReader handles. DataLoader workers are separate
+# processes, so each worker gets its own _VR_CACHE — no contention. Opening
+# a VideoReader is expensive (~30-100ms for Full HD), and the same video is
+# hit by many windows per epoch, so caching gives a big speedup.
+_VR_CACHE: dict = {}
+_VR_CACHE_MAX = 8  # cap per-worker open handles to avoid FD/memory bloat
+
+def _get_vr(vp):
+    vr = _VR_CACHE.get(vp)
+    if vr is not None:
+        return vr
+    # simple LRU-ish eviction
+    if len(_VR_CACHE) >= _VR_CACHE_MAX:
+        _VR_CACHE.pop(next(iter(_VR_CACHE)))
+    vr = VideoReader(vp, ctx=cpu(0))
+    _VR_CACHE[vp] = vr
+    return vr
+
+
 class SlidingWindowDataset(Dataset):
     def __init__(self,video_paths,label_paths,ws,stride,cfg,nc,label_map,skip=0,augment=None):
         self.cfg=cfg; self.ws=ws; self.augment=augment; self.samples=[]; self.sample_labels=[]
+        self._input_size=cfg["backbone"]["input_size"]  # cache for fast path
         for vp,lp in zip(video_paths,label_paths):
             try:
                 vr=VideoReader(vp,ctx=cpu(0)); T=len(vr); fps=vr.get_avg_fps()
@@ -293,11 +318,16 @@ class SlidingWindowDataset(Dataset):
             except Exception as e: print(f"⚠️ Skipped {vp}: {e}"); continue
     def __len__(self): return len(self.samples)
     def __getitem__(self,i):
-        vp,idx,lbl=self.samples[i]; vr=VideoReader(vp,ctx=cpu(0))
+        vp,idx,lbl=self.samples[i]
+        vr=_get_vr(vp)  # cached per-worker; avoids re-opening the file every call
         frames=[Image.fromarray(f) for f in vr.get_batch(idx).asnumpy()]
         if len(frames)<self.ws: frames+=[frames[-1]]*(self.ws-len(frames))
+        # Resize EARLY — augmentation runs on 224x224 instead of e.g. 1920x1080.
+        # Rotation / color jitter / blur are ~50-70× faster at small resolution.
+        sz=self._input_size
+        frames=[f.resize((sz,sz),Image.BILINEAR) for f in frames]
         if self.augment: frames=self.augment(frames)
-        return preprocess(frames,self.cfg),torch.tensor(lbl,dtype=torch.long)
+        return preprocess(frames,self.cfg,skip_resize=True),torch.tensor(lbl,dtype=torch.long)
 
 # ====================== State ======================
 
@@ -955,8 +985,12 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                  n_epochs,batch_sz,lr_str,val_pct,ws,stride_val,val_seed,train_seed,
                  aug_blur_frac,aug_tdrop_frac,aug_hflip_p,aug_vflip_p,
                  aug_rot_deg,aug_brightness,aug_contrast,aug_saturation,
-                 aug_offline_mult,aug_excluded_classes,
                  *dd_vals):
+    # Offline-augmentation is currently disabled in the UI to keep training fast
+    # on memory-limited machines. The dataset-duplication logic below still
+    # works if you wire these parameters back to a UI control.
+    aug_offline_mult = 1
+    aug_excluded_classes: list = []
     try:
         lr=float(lr_str); val_ratio=float(val_pct)/100.0; n_epochs=int(n_epochs)
         batch_sz=int(batch_sz); ws=int(ws); stride_val=int(stride_val)
@@ -965,8 +999,6 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
         aug_hflip_p=float(aug_hflip_p); aug_vflip_p=float(aug_vflip_p)
         aug_rot_deg=float(aug_rot_deg); aug_brightness=float(aug_brightness)
         aug_contrast=float(aug_contrast); aug_saturation=float(aug_saturation)
-        aug_offline_mult=int(aug_offline_mult)
-        aug_excluded_classes=list(aug_excluded_classes) if aug_excluded_classes else []
     except Exception as e: yield f"❌ Invalid params: {e}",U; return
 
     if not S["model"] or not S["cfg"]: yield "❌ Load model first",U; return
@@ -1135,8 +1167,6 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                 "brightness": aug_brightness,
                 "contrast": aug_contrast,
                 "saturation": aug_saturation,
-                "offline_multiplier": aug_offline_mult,
-                "offline_excluded_classes": aug_excluded_classes,
             },
         }
         cfg_path = mp.replace(".pth", "_config.json")
@@ -1301,14 +1331,6 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
                                        label="Temporal dropout fraction",
                                        info="Fraction of frames replaced by a neighbor. 0 = off")
 
-                gr.Markdown("**Offline augmentation** — multiply dataset size (Roboflow-style class balancing)")
-                aug_offline_mult_in=gr.Slider(minimum=1,maximum=10,step=1,value=1,
-                                              label="Copies per window",
-                                              info="1 = off. 3 = each window trained on 3× per epoch with different aug each time")
-                aug_excluded_in=gr.CheckboxGroup(choices=[],value=[],
-                                                 label="Do NOT multiply these classes",
-                                                 info="Typically exclude majority classes like 'Other' to balance the dataset. Updates when you change label mapping.")
-
             train_btn=gr.Button("🚀 Start training",variant="primary",size="lg")
             gr.Markdown("---")
             gr.Markdown("### ④ Validation results")
@@ -1323,32 +1345,11 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
     scan_outputs = [scan_st, label_dist_html, nav_md, *map_dds, vid_dd,
                     frame_img, info_html, timeline_html, scrubber, cursor_state, vid_list_html, mapping_summary]
 
-    # Offline-aug excluded-classes checkbox: keep choices in sync with current
-    # training classes (new_names). Defined here so scan_d.click().then(...) below can reference it.
-    def _update_excluded_choices(head_mode, *dd_vals):
-        data_labels = S["label_names"]
-        pretrained_names = S["cfg"]["class_names"] if S["cfg"] else []
-        if not data_labels:
-            return gr.update(choices=[], value=[])
-        vals = list(dd_vals[:len(data_labels)])
-        new_names, _ = compute_label_map_from_dropdowns(head_mode, vals, data_labels, pretrained_names)
-        prev = dd_vals[-1] if dd_vals else []
-        prev = list(prev) if prev else []
-        # Default: pre-select "Other"/"others" if present (most common use case)
-        default_excluded = [n for n in new_names if n.lower() in ("other","others")]
-        kept = [v for v in prev if v in new_names]
-        value = kept if kept else default_excluded
-        return gr.update(choices=list(new_names), value=value)
-
     # Demo button → download from HF + auto-scan (same outputs as Load folder, paths stay untouched)
-    demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
-                   ).then(_update_excluded_choices,
-                          [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+    demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs)
 
     # Load folder → scan user's own directories
-    scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
-                 ).then(_update_excluded_choices,
-                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+    scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs)
 
     # Head mode change → rebuild all mapping dropdowns + timeline + summary
     map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
@@ -1357,13 +1358,6 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
     # Any mapping dropdown change → rebuild others + timeline + summary
     for dd in map_dds:
         dd.change(on_mapping_change, [head_mode_dd, *map_dds], map_change_outputs)
-
-    # Keep excluded-classes checkbox in sync on mapping / head-mode changes
-    head_mode_dd.change(_update_excluded_choices,
-                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
-    for dd in map_dds:
-        dd.change(_update_excluded_choices,
-                  [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
 
     # Val ratio or val seed change → recompute split
     vr_in.change(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
@@ -1389,7 +1383,6 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
                      ep_in,bs_in,lr_in,vr_in,ws_in,st_in,val_seed_in,train_seed_in,
                      aug_blur_in,aug_tdrop_in,aug_hflip_in,aug_vflip_in,
                      aug_rot_in,aug_brightness_in,aug_contrast_in,aug_saturation_in,
-                     aug_offline_mult_in,aug_excluded_in,
                      *map_dds],
                     [progress_html,val_html])
 
