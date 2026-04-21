@@ -1111,7 +1111,11 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                 for vi,(v,t) in enumerate(val_loader):
                     v=v.to(device)
                     with autocast(): o=model(v); pr=torch.softmax(o,dim=1)
-                    ap_.extend(torch.argmax(o,1).cpu().numpy()); al_.extend(t.numpy()); apr_.extend(pr.cpu().numpy())
+                    # .detach() defends against edge cases where autocast or PyTorch
+                    # version leaves tensors in a grad-tracking state even inside no_grad
+                    ap_.extend(torch.argmax(o,1).detach().cpu().numpy())
+                    al_.extend(t.detach().cpu().numpy())
+                    apr_.extend(pr.detach().cpu().numpy())
                     if (vi+1)%5==0 or vi==nb_val-1:
                         vd=min((vi+1)*batch_sz,val_total)
                         yield html_progress(ep,n_epochs,vd,val_total,"validating"),U
