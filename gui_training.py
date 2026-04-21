@@ -16,7 +16,14 @@ from collections import Counter
 from decord import VideoReader, cpu
 from huggingface_hub import hf_hub_download, list_repo_files
 from torch.utils.data import Dataset, DataLoader
-from torch.cuda.amp import GradScaler, autocast
+# GradScaler / autocast: the new torch.amp API (device-aware) replaces the deprecated
+# torch.cuda.amp API in PyTorch 2.3+. Fall back to the old one on older versions.
+try:
+    from torch.amp import GradScaler as _GradScaler, autocast as _autocast
+    def GradScaler(): return _GradScaler("cuda")
+    def autocast(): return _autocast("cuda")
+except ImportError:
+    from torch.cuda.amp import GradScaler, autocast  # pragma: no cover
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.metrics import f1_score, average_precision_score
 from sklearn.model_selection import train_test_split
@@ -277,24 +284,6 @@ def load_label_data(lp, total_frames, video_fps):
 
 # ====================== Dataset ======================
 
-# Per-process cache of VideoReader handles. DataLoader workers are separate
-# processes, so each worker gets its own _VR_CACHE — no contention. Opening
-# a VideoReader is expensive (~30-100ms for Full HD), and the same video is
-# hit by many windows per epoch, so caching gives a big speedup.
-_VR_CACHE: dict = {}
-_VR_CACHE_MAX = 8  # cap per-worker open handles to avoid FD/memory bloat
-
-def _get_vr(vp):
-    vr = _VR_CACHE.get(vp)
-    if vr is not None:
-        return vr
-    # simple LRU-ish eviction
-    if len(_VR_CACHE) >= _VR_CACHE_MAX:
-        _VR_CACHE.pop(next(iter(_VR_CACHE)))
-    vr = VideoReader(vp, ctx=cpu(0))
-    _VR_CACHE[vp] = vr
-    return vr
-
 
 class SlidingWindowDataset(Dataset):
     def __init__(self,video_paths,label_paths,ws,stride,cfg,nc,label_map,skip=0,augment=None):
@@ -319,11 +308,14 @@ class SlidingWindowDataset(Dataset):
     def __len__(self): return len(self.samples)
     def __getitem__(self,i):
         vp,idx,lbl=self.samples[i]
-        vr=_get_vr(vp)  # cached per-worker; avoids re-opening the file every call
+        # NOTE: we open a fresh VideoReader per call. A per-worker cache was tried
+        # but decord + torch DataLoader workers have known memory-accumulation issues
+        # (see dmlc/decord#280) — caching makes Colab OOM / workers crash silently.
+        vr=VideoReader(vp,ctx=cpu(0))
         frames=[Image.fromarray(f) for f in vr.get_batch(idx).asnumpy()]
         if len(frames)<self.ws: frames+=[frames[-1]]*(self.ws-len(frames))
         # Resize EARLY — augmentation runs on 224x224 instead of e.g. 1920x1080.
-        # Rotation / color jitter / blur are ~50-70× faster at small resolution.
+        # Rotation / color jitter / blur are ~50-70x faster at small resolution.
         sz=self._input_size
         frames=[f.resize((sz,sz),Image.BILINEAR) for f in frames]
         if self.augment: frames=self.augment(frames)
@@ -983,6 +975,7 @@ def build_val_html(log,names):
 
 def run_training(repo,mname,vdir,ldir,odir,head_mode,
                  n_epochs,batch_sz,lr_str,val_pct,ws,stride_val,val_seed,train_seed,
+                 num_workers,
                  aug_blur_frac,aug_tdrop_frac,aug_hflip_p,aug_vflip_p,
                  aug_rot_deg,aug_brightness,aug_contrast,aug_saturation,
                  *dd_vals):
@@ -995,6 +988,7 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
         lr=float(lr_str); val_ratio=float(val_pct)/100.0; n_epochs=int(n_epochs)
         batch_sz=int(batch_sz); ws=int(ws); stride_val=int(stride_val)
         val_seed=int(val_seed); train_seed=int(train_seed)
+        num_workers=int(num_workers)
         aug_blur_frac=float(aug_blur_frac); aug_tdrop_frac=float(aug_tdrop_frac)
         aug_hflip_p=float(aug_hflip_p); aug_vflip_p=float(aug_vflip_p)
         aug_rot_deg=float(aug_rot_deg); aug_brightness=float(aug_brightness)
@@ -1080,9 +1074,15 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
         random.seed(seed)
         np.random.seed(seed % (2**32))
 
-    train_loader=DataLoader(train_ds,batch_sz,shuffle=True,num_workers=4,pin_memory=True,
-                            generator=g,worker_init_fn=_worker_init)
-    val_loader=DataLoader(val_ds,batch_sz,shuffle=False,num_workers=4,pin_memory=True) if val_ds and len(val_ds)>0 else None
+    # worker_init_fn / persistent_workers are only meaningful when num_workers > 0
+    train_loader_kwargs = dict(batch_size=batch_sz, shuffle=True, pin_memory=True,
+                               num_workers=num_workers, generator=g)
+    if num_workers > 0:
+        train_loader_kwargs["worker_init_fn"] = _worker_init
+    train_loader = DataLoader(train_ds, **train_loader_kwargs)
+
+    val_loader = DataLoader(val_ds, batch_sz, shuffle=False, num_workers=num_workers,
+                            pin_memory=True) if val_ds and len(val_ds) > 0 else None
     total_win=len(train_ds)
 
     optimizer=optim.AdamW(model.parameters(),lr=lr,weight_decay=0.01)
@@ -1302,6 +1302,9 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
             with gr.Row():
                 val_seed_in=gr.Number(label="Val seed",value=1337,precision=0,info="Split reproducibility")
                 train_seed_in=gr.Number(label="Train seed",value=2025,precision=0,info="Augmentation reproducibility")
+            nw_in=gr.Slider(minimum=0,maximum=8,step=1,value=2,
+                            label="DataLoader workers",
+                            info="0 = single process (safest, slowest). 2 = good for Colab. 4+ may crash with large videos.")
 
             with gr.Accordion("🎨 Augmentation", open=False):
                 gr.Markdown("**Spatial** — applied to the whole window consistently")
@@ -1381,6 +1384,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME) as demo:
     train_btn.click(run_training,
                     [repo_in,model_dd,vdir_in,ldir_in,odir_in,head_mode_dd,
                      ep_in,bs_in,lr_in,vr_in,ws_in,st_in,val_seed_in,train_seed_in,
+                     nw_in,
                      aug_blur_in,aug_tdrop_in,aug_hflip_in,aug_vflip_in,
                      aug_rot_in,aug_brightness_in,aug_contrast_in,aug_saturation_in,
                      *map_dds],
