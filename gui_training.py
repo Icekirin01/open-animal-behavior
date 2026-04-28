@@ -258,6 +258,43 @@ def boris_to_onehot(lp, total_frames, video_fps):
     return onehot_full, behavior_names
 
 
+def align_onehot_to_global(oh, col_names, global_names):
+    """
+    Re-arrange a (T, n_local) onehot to match a global column order (T, n_global).
+    Columns present locally are copied to their global slot; missing columns are
+    filled with zeros. After realignment, frames where all behaviour columns are
+    zero are re-routed to the global "Other" column (so the file still
+    contributes valid labels even if it has fewer behaviours than the dataset).
+
+    This fixes the silent bug where np.argmax on an unaligned per-file onehot
+    points to the wrong class in the global namespace.
+    """
+    T = oh.shape[0]
+    n_global = len(global_names)
+    out = np.zeros((T, n_global), dtype=oh.dtype)
+
+    # Map each local column to its global index (if any)
+    for local_i, name in enumerate(col_names):
+        if name in global_names:
+            g = global_names.index(name)
+            out[:, g] = oh[:, local_i]
+        # else: this file has a behaviour the global set doesn't know — drop it
+
+    # If the global set has an "Other" column, make sure rows that are
+    # all-zero in the behaviour cols (i.e. "no behaviour active") still mark
+    # Other = 1, even if this file's local oh didn't have an Other column.
+    if "Other" in global_names:
+        other_g = global_names.index("Other")
+        # behaviour mask = global cols except Other
+        beh_mask = [i for i in range(n_global) if i != other_g]
+        if beh_mask:
+            no_beh = (out[:, beh_mask].sum(axis=1) == 0)
+            out[no_beh, other_g] = 1
+        else:
+            out[:, other_g] = 1
+    return out
+
+
 # In-memory cache: lp -> (onehot_array, behavior_names)
 # Avoids re-parsing on every window during training.
 _BORIS_CACHE: dict = {}
@@ -289,16 +326,20 @@ class SlidingWindowDataset(Dataset):
     def __init__(self,video_paths,label_paths,ws,stride,cfg,nc,label_map,skip=0,augment=None):
         self.cfg=cfg; self.ws=ws; self.augment=augment; self.samples=[]; self.sample_labels=[]
         self._input_size=cfg["backbone"]["input_size"]  # cache for fast path
+        # Global label order from the scan stage. Per-file onehots will be
+        # realigned to this order so that argmax produces correct global indices.
+        global_names = S.get("label_names", []) or []
         for vp,lp in zip(video_paths,label_paths):
             try:
                 vr=VideoReader(vp,ctx=cpu(0)); T=len(vr); fps=vr.get_avg_fps()
 
                 # ---- unified label loading (handles both BORIS and one-hot) ----
-                oh, _ = load_label_data(lp, T, fps)
+                oh, col_names = load_label_data(lp, T, fps)
+                if global_names and col_names != global_names:
+                    oh = align_onehot_to_global(oh, col_names, global_names)
 
-                n_cols=oh.shape[1]
                 if T!=len(oh): print(f"⚠️ Length mismatch {vp}"); continue
-                raw=np.argmax(oh[:,:n_cols],axis=1); mapped=np.array([label_map.get(int(l),-1) for l in raw])
+                raw=np.argmax(oh,axis=1); mapped=np.array([label_map.get(int(l),-1) for l in raw])
                 sel=list(range(0,T,skip+1)); valid=[i for i in sel if i<len(mapped) and mapped[i]>=0]
                 if len(valid)<ws: continue
                 for s in range(0,len(valid)-ws+1,stride):
@@ -736,21 +777,12 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
                 print(f"⚠️ Length mismatch (one-hot) {vf}: video={T}, csv={len(oh)}")
                 continue
 
-            if all_label_names is None:
-                all_label_names = col_names
-            elif col_names != all_label_names:
-                # Tolerate different column order / subset by re-aligning
-                print(f"⚠️ Column mismatch in {vf} — will use first file's column order")
-
-            # argmax over behaviour columns (excluding Other for counting purposes)
-            n_cols = oh.shape[1]
-            labels = np.argmax(oh[:, :n_cols], axis=1)
-            counts = Counter(labels.tolist())
+            # Defer label computation until we know the global column union.
+            # Storing oh + col_names per file lets us realign correctly later.
             matched.append({
                 "vp": vp, "lp": lp, "vf": vf,
                 "T": T, "fps": fps,
-                "counts": counts,
-                "labels": labels.tolist(),
+                "_oh_raw": oh, "_cols_raw": col_names,
                 "is_boris": boris,
             })
         except Exception as e:
@@ -758,8 +790,36 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
             continue
 
     if not matched: return empty("❌ No matched pairs")
-    if all_label_names is None:
-        all_label_names = [f"class_{i}" for i in range(max(max(d["counts"].keys()) for d in matched)+1)]
+
+    # ---- compute global label set as the UNION of all files' columns ----
+    # This is critical: if file A has [dark eye patch, extended tentacle, Other]
+    # and file B has only [dark eye patch, Other], we cannot just adopt the
+    # first file's columns — we need every behaviour seen across the dataset.
+    # Order = first-appearance order, then "Other" pushed to last if present.
+    global_names = []
+    for d in matched:
+        for n in d["_cols_raw"]:
+            if n not in global_names:
+                global_names.append(n)
+    if "Other" in global_names:
+        global_names = [n for n in global_names if n != "Other"] + ["Other"]
+    all_label_names = global_names
+
+    # Now realign each file's onehot to the global column order, then compute
+    # per-frame argmax labels in the global namespace.
+    n_misaligned = 0
+    for d in matched:
+        oh_local = d.pop("_oh_raw")
+        cols_local = d.pop("_cols_raw")
+        if cols_local != all_label_names:
+            n_misaligned += 1
+            print(f"⚠️ Column set differs in {d['vf']} (has {cols_local}); realigning to global order")
+        oh_global = align_onehot_to_global(oh_local, cols_local, all_label_names)
+        labels = np.argmax(oh_global, axis=1)
+        d["counts"] = Counter(labels.tolist())
+        d["labels"] = labels.tolist()
+    if n_misaligned:
+        print(f"ℹ️ Realigned {n_misaligned}/{len(matched)} file(s) to global label order: {all_label_names}")
 
     S["scan_data"]=matched; S["label_names"]=all_label_names
     compute_split(val_pct, val_seed)
