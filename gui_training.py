@@ -25,7 +25,7 @@ try:
 except ImportError:
     from torch.cuda.amp import GradScaler, autocast  # pragma: no cover
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from sklearn.metrics import f1_score, average_precision_score
+from sklearn.metrics import f1_score, average_precision_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from difflib import SequenceMatcher
 
@@ -1027,24 +1027,39 @@ def on_val_ratio_change(val_pct, val_seed):
 
 # ====================== Progress + Validation HTML ======================
 
-def html_progress(ep_done,ep_total,win_done,win_total,phase="training"):
+def html_progress(ep_done,ep_total,win_done,win_total,phase="training",ws=None,elapsed=None):
     if ep_total==0: return ""
     ep_pct=(ep_done/ep_total)*100; wp=(win_done/max(win_total,1))*100
     ec="#1D9E75" if ep_done==ep_total else "#D85A30"
     st="✅ Complete" if ep_done==ep_total else "Training..."
-    return f"<div style='background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:10px 14px;'><div style='display:flex;justify-content:space-between;margin-bottom:4px;'><span style='font-size:13px;font-weight:500;'>Epoch — {st}</span><span style='font-size:12px;color:#888;'>{ep_done}/{ep_total} epochs</span></div><div style='height:8px;background:#eee;border-radius:4px;overflow:hidden;margin-bottom:10px;'><div style='width:{ep_pct:.1f}%;height:100%;background:{ec};border-radius:4px;transition:width 0.3s;'></div></div><div style='display:flex;justify-content:space-between;margin-bottom:4px;'><span style='font-size:12px;font-weight:500;'>Epoch {min(ep_done+1,ep_total)} — {phase}</span><span style='font-size:12px;color:#888;'>{win_done}/{win_total} windows</span></div><div style='height:6px;background:#eee;border-radius:3px;overflow:hidden;'><div style='width:{wp:.1f}%;height:100%;background:#1D9E75;border-radius:3px;transition:width 0.15s;'></div></div></div>"
+    # Throughput: windows/sec and frames/sec (= win/s × window_size)
+    rate_str=""
+    if elapsed and elapsed>0.1 and win_done>0:
+        wps=win_done/elapsed
+        if ws and ws>0:
+            rate_str=f" · {wps:.1f} win/s · {wps*ws:.0f} frame/s"
+        else:
+            rate_str=f" · {wps:.1f} win/s"
+    return f"<div style='background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:10px 14px;'><div style='display:flex;justify-content:space-between;margin-bottom:4px;'><span style='font-size:13px;font-weight:500;'>Epoch — {st}</span><span style='font-size:12px;color:#888;'>{ep_done}/{ep_total} epochs</span></div><div style='height:8px;background:#eee;border-radius:4px;overflow:hidden;margin-bottom:10px;'><div style='width:{ep_pct:.1f}%;height:100%;background:{ec};border-radius:4px;transition:width 0.3s;'></div></div><div style='display:flex;justify-content:space-between;margin-bottom:4px;'><span style='font-size:12px;font-weight:500;'>Epoch {min(ep_done+1,ep_total)} — {phase}</span><span style='font-size:12px;color:#888;'>{win_done}/{win_total} windows{rate_str}</span></div><div style='height:6px;background:#eee;border-radius:3px;overflow:hidden;'><div style='width:{wp:.1f}%;height:100%;background:#1D9E75;border-radius:3px;transition:width 0.15s;'></div></div></div>"
 
-def html_val_card(epoch,loss,f1,mAP,f1_per,ap_per,names,is_best=False):
+def html_val_card(epoch,loss,f1,mAP,f1_per,ap_per,names,prec_per=None,rec_per=None,is_best=False):
     brd="border:2px solid var(--color-border-info);" if is_best else "border:0.5px solid var(--color-border-tertiary);"
     badge="<span style='font-size:10px;padding:2px 6px;background:var(--color-background-info);color:var(--color-text-info);border-radius:var(--border-radius-md);margin-left:6px;'>best</span>" if is_best else ""
     fc="color:var(--color-text-info);" if is_best else ""
-    rows="".join(f"<div style='display:flex;justify-content:space-between;'><span>{nm}</span><span>F1: {f1_per[i] if i<len(f1_per) else 0:.3f} · AP: {ap_per[i] if i<len(ap_per) else 0:.3f}</span></div>" for i,nm in enumerate(names))
+    prec_per=prec_per or []; rec_per=rec_per or []
+    def _row(i,nm):
+        p=prec_per[i] if i<len(prec_per) else 0.0
+        r=rec_per[i] if i<len(rec_per) else 0.0
+        f=f1_per[i] if i<len(f1_per) else 0.0
+        a=ap_per[i] if i<len(ap_per) else 0.0
+        return f"<div style='display:flex;justify-content:space-between;'><span>{nm}</span><span style='font-variant-numeric:tabular-nums;'>P: {p:.2f} · R: {r:.2f} · F1: {f:.2f} · AP: {a:.2f}</span></div>"
+    rows="".join(_row(i,nm) for i,nm in enumerate(names))
     return f"<div style='background:var(--color-background-primary);{brd}border-radius:var(--border-radius-lg);padding:14px;margin-bottom:12px;'><div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;'><div style='display:flex;align-items:center;'><span style='font-size:13px;font-weight:500;'>Epoch {epoch}</span>{badge}</div><span style='font-size:11px;color:var(--color-text-secondary);'>loss: {loss:.4f}</span></div><div style='display:flex;gap:8px;margin-bottom:8px;'><div style='flex:1;background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:6px;text-align:center;'><div style='font-size:11px;color:var(--color-text-secondary);'>F1-macro</div><div style='font-size:16px;font-weight:500;{fc}'>{f1:.4f}</div></div><div style='flex:1;background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:6px;text-align:center;'><div style='font-size:11px;color:var(--color-text-secondary);'>mAP</div><div style='font-size:16px;font-weight:500;{fc}'>{mAP:.4f}</div></div></div><div style='font-size:11px;color:var(--color-text-secondary);line-height:1.6;'>{rows}</div></div>"
 
 def build_val_html(log,names):
     if not log: return "<p style='color:#aaa;'>Training not started</p>"
     best=max(range(len(log)),key=lambda i:log[i]["f1"])
-    return "".join(html_val_card(e["epoch"],e["loss"],e["f1"],e["mAP"],e["f1_per"],e["ap_per"],names,i==best) for i,e in enumerate(log))
+    return "".join(html_val_card(e["epoch"],e["loss"],e["f1"],e["mAP"],e["f1_per"],e["ap_per"],names,e.get("prec_per"),e.get("rec_per"),i==best) for i,e in enumerate(log))
 
 # ====================== Training ======================
 
@@ -1094,7 +1109,7 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
         if val_ratio>0 and len(data)>=4: tidx,vidx=train_test_split(list(range(len(data))),test_size=val_ratio,random_state=val_seed)
         else: tidx=list(range(len(data))); vidx=[]
 
-    yield html_progress(0,n_epochs,0,0,"building dataset..."),"<p style='color:#aaa;'>Building...</p>"
+    yield html_progress(0,n_epochs,0,0,"building dataset...",ws=ws),"<p style='color:#aaa;'>Building...</p>"
 
     # Online augmentation: uses the `random` module globally so each DataLoader
     # worker (seeded via worker_init_fn below) gets its own stream, and every
@@ -1170,18 +1185,22 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
 
     for ep in range(n_epochs):
         model.train(); rl=0.0; optimizer.zero_grad(set_to_none=True); nb=len(train_loader)
+        ep_t0=time.perf_counter()
         for bi,(vids,tgts) in enumerate(train_loader):
             vids=vids.to(device); tgts=tgts.to(device)
             with autocast(): loss=criterion(model(vids),tgts)/accum
             scaler.scale(loss).backward()
             if (bi+1)%accum==0 or (bi+1)==nb: scaler.step(optimizer); scaler.update(); optimizer.zero_grad(set_to_none=True)
             rl+=loss.item()*accum*vids.size(0)
-            if (bi+1)%5==0 or bi==nb-1: yield html_progress(ep,n_epochs,min((bi+1)*batch_sz,total_win),total_win,"training"),U
+            if (bi+1)%5==0 or bi==nb-1:
+                wd=min((bi+1)*batch_sz,total_win)
+                yield html_progress(ep,n_epochs,wd,total_win,"training",ws=ws,elapsed=time.perf_counter()-ep_t0),U
 
         scheduler.step(); ep_loss=rl/len(train_ds)
-        f1m=0; mAP=0; f1p=[]; app=[]
+        f1m=0; mAP=0; f1p=[]; app=[]; precp=[]; recp=[]
         if val_loader:
             model.eval(); ap_=[]; al_=[]; apr_=[]; val_total=len(val_ds); nb_val=len(val_loader)
+            val_t0=time.perf_counter()
             with torch.no_grad():
                 for vi,(v,t) in enumerate(val_loader):
                     v=v.to(device)
@@ -1193,9 +1212,11 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                     apr_.extend(pr.detach().cpu().numpy())
                     if (vi+1)%5==0 or vi==nb_val-1:
                         vd=min((vi+1)*batch_sz,val_total)
-                        yield html_progress(ep,n_epochs,vd,val_total,"validating"),U
+                        yield html_progress(ep,n_epochs,vd,val_total,"validating",ws=ws,elapsed=time.perf_counter()-val_t0),U
             f1p=f1_score(al_,ap_,average=None,labels=list(range(new_nc)),zero_division=0).tolist()
             f1m=f1_score(al_,ap_,average="macro",zero_division=0)
+            precp=precision_score(al_,ap_,average=None,labels=list(range(new_nc)),zero_division=0).tolist()
+            recp=recall_score(al_,ap_,average=None,labels=list(range(new_nc)),zero_division=0).tolist()
             oh=np.zeros((len(al_),new_nc))
             for i,l in enumerate(al_): oh[i,l]=1
             pr_arr=np.array(apr_)
@@ -1256,8 +1277,8 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
         cfg_path = mp.replace(".pth", "_config.json")
         with open(cfg_path, "w") as f: json.dump(cfg_out, f, indent=2)
 
-        S["train_log"].append({"epoch":ep+1,"loss":ep_loss,"f1":f1m,"mAP":mAP,"f1_per":f1p,"ap_per":app,"path":mp,"config_path":cfg_path})
-        yield html_progress(ep+1,n_epochs,total_win,total_win,"done"),build_val_html(S["train_log"],new_names)
+        S["train_log"].append({"epoch":ep+1,"loss":ep_loss,"f1":f1m,"mAP":mAP,"f1_per":f1p,"ap_per":app,"prec_per":precp,"rec_per":recp,"path":mp,"config_path":cfg_path})
+        yield html_progress(ep+1,n_epochs,total_win,total_win,"done",ws=ws),build_val_html(S["train_log"],new_names)
 
     with open(os.path.join(odir,"training_log.json"),"w") as f: json.dump(S["train_log"],f,indent=2)
     print("✅ Training complete!")
