@@ -332,6 +332,7 @@ class SlidingWindowDataset(Dataset):
         for vp,lp in zip(video_paths,label_paths):
             try:
                 vr=VideoReader(vp,ctx=cpu(0)); T=len(vr); fps=vr.get_avg_fps()
+                del vr  # free decord's frame cache (see scan stage comment)
 
                 # ---- unified label loading (handles both BORIS and one-hot) ----
                 oh, col_names = load_label_data(lp, T, fps)
@@ -762,6 +763,10 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
         vp=os.path.join(vdir,vf)
         try:
             vr=VideoReader(vp,ctx=cpu(0)); T=len(vr); fps=vr.get_avg_fps()
+            # Free decord's frame cache as soon as we have what we need.
+            # Without this, scanning many videos accumulates ~tens of MB each
+            # in cached decoded frames and can OOM on Colab.
+            del vr
 
             # ---- detect format and load ----
             boris = is_boris_csv(lp)
@@ -943,6 +948,16 @@ def _get_frame(vf, fi):
     if not d: return None
     try:
         if S["cur_vf"]!=vf or S["cur_vr"] is None:
+            # IMPORTANT: explicitly release the old VideoReader before opening a
+            # new one. decord's VideoReader holds a C++ frame cache + open file
+            # descriptor that Python's GC may not free promptly — without this,
+            # switching between videos in the preview will leak hundreds of MB
+            # per switch and crash Colab on RAM.
+            old = S.get("cur_vr")
+            if old is not None:
+                S["cur_vr"] = None
+                del old
+                import gc; gc.collect()
             S["cur_vr"]=VideoReader(d["vp"],ctx=cpu(0)); S["cur_vf"]=vf
         T=len(S["cur_vr"]); fi=max(0,min(int(fi),T-1))
         return S["cur_vr"][fi].asnumpy()
