@@ -5,7 +5,7 @@ Usage:
     python gui_inference.py
 """
 
-import os, json
+import os, json, time
 import numpy as np
 import torch
 import gradio as gr
@@ -247,11 +247,18 @@ def scan_videos_and_preview(vdir):
 
 # ====================== HTML Builders ======================
 
-def html_progress(vd, vt, cur_name, wd, wt):
+def html_progress(vd, vt, cur_name, wd, wt, ws=None, elapsed=None):
     if vt == 0: return ""
     vp = (vd / vt) * 100; wp = (wd / max(wt, 1)) * 100
     vc = "#1D9E75" if vd == vt else "#D85A30"
     st = "✅ Complete" if vd == vt else "Processing..."
+    rate_str = ""
+    if elapsed and elapsed > 0.1 and wd > 0:
+        wps = wd / elapsed
+        if ws and ws > 0:
+            rate_str = f" · {wps:.1f} win/s · {wps*ws:.0f} frame/s"
+        else:
+            rate_str = f" · {wps:.1f} win/s"
     return f"""<div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:10px 14px;">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
         <span style="font-size:13px;font-weight:600;">Batch — {st}</span>
@@ -260,7 +267,7 @@ def html_progress(vd, vt, cur_name, wd, wt):
         <div style="width:{vp:.1f}%;height:100%;background:{vc};border-radius:4px;"></div></div>
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
         <span style="font-size:12px;font-weight:500;">Current: {cur_name}</span>
-        <span style="font-size:12px;color:#888;">{wd}/{wt} windows</span></div>
+        <span style="font-size:12px;color:#888;">{wd}/{wt} windows{rate_str}</span></div>
       <div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;">
         <div style="width:{wp:.1f}%;height:100%;background:#1D9E75;border-radius:3px;"></div></div>
     </div>"""
@@ -464,12 +471,14 @@ def run_single(vf):
     vdir = S.get("_active_vdir")
     if not S["model"]: yield "", "", None, "", "", "", "❌ Load model first", U, S["_cursor_data"]; return
     if not vf or not vdir: yield "", "", None, "", "", "", "❌ Select video", U, S["_cursor_data"]; return
+    ws = S["cfg"]["backbone"]["num_frames"] if S.get("cfg") else None
+    t0 = time.perf_counter()
     result = None
     for msg in infer_video_gen(vdir, vf, S["model"], S["cfg"], S["disabled_classes"]):
         if isinstance(msg, dict): result = msg
         else:
             wd, wt = msg
-            yield html_progress(0, 1, vf, wd, wt), U, U, U, U, U, U, U, U
+            yield html_progress(0, 1, vf, wd, wt, ws=ws, elapsed=time.perf_counter()-t0), U, U, U, U, U, U, U, U
     S["results"][vf] = result
     if vf not in S["done"]: S["done"].append(vf)
     yield _full(vf, 0, 1, 1)
@@ -480,21 +489,23 @@ def run_batch():
     if not vdir or not os.path.isdir(vdir): yield "", "", None, "", "", "", "❌ Load videos first", U, S["_cursor_data"], ""; return
     vids = sorted([f for f in os.listdir(vdir) if f.lower().endswith((".mp4", ".avi", ".mov"))])
     if not vids: yield "", "", None, "", "", "", "❌ No videos", U, S["_cursor_data"], ""; return
+    ws = S["cfg"]["backbone"]["num_frames"] if S.get("cfg") else None
     total = len(vids); blog = []
     for vi, vf in enumerate(vids):
+        t0 = time.perf_counter()  # reset timer per video for stable in-video rate
         result = None
         for msg in infer_video_gen(vdir, vf, S["model"], S["cfg"], S["disabled_classes"]):
             if isinstance(msg, dict): result = msg
             else:
                 wd, wt = msg
-                yield html_progress(vi, total, vf, wd, wt), U, U, U, U, U, U, U, U, U
+                yield html_progress(vi, total, vf, wd, wt, ws=ws, elapsed=time.perf_counter()-t0), U, U, U, U, U, U, U, U, U
         S["results"][vf] = result
         if vf not in S["done"]: S["done"].append(vf)
         blog.append(f"✅ {vf} ({result['total_frames']} fr)")
         S["cur"] = vf; S["vr"] = None; _update_cursor(vf)
         if vf in S["done"]: S["idx"] = S["done"].index(vf)
         T = result["total_frames"]
-        yield (html_progress(vi + 1, total, vf, T, T),
+        yield (html_progress(vi + 1, total, vf, T, T, ws=ws, elapsed=time.perf_counter()-t0),
                frame_info_html(vf, 0), get_frame(vf, 0),
                html_timeline(vf), html_behavior(vf),
                html_export_preview(vf, "One-hot CSV (per-frame)"),
