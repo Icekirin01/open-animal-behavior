@@ -55,6 +55,8 @@ DEFAULTS = dict(
     base_lr=3.8e-5,
     weight_decay=0.01,
     num_workers=8,
+    persistent_workers=True,
+    prefetch_factor=2,
     use_class_weights=False,
     aug_blur=True,
     aug_blur_frac=0.35,
@@ -84,6 +86,10 @@ def parse_args():
     p.add_argument("--base_lr", type=float, default=DEFAULTS["base_lr"])
     p.add_argument("--weight_decay", type=float, default=DEFAULTS["weight_decay"])
     p.add_argument("--num_workers", type=int, default=DEFAULTS["num_workers"])
+    p.add_argument("--persistent_workers", action="store_true",
+                   default=DEFAULTS["persistent_workers"],
+                   help="Keep DataLoader workers alive across epochs (matches Colab behavior)")
+    p.add_argument("--prefetch_factor", type=int, default=DEFAULTS["prefetch_factor"])
     p.add_argument("--window_size", type=int, default=DEFAULTS["window_size"])
     p.add_argument("--stride", type=int, default=DEFAULTS["stride"])
     p.add_argument("--skip", type=int, default=DEFAULTS["skip"])
@@ -483,10 +489,25 @@ def main():
         print(f"  {selected[c]:>15}: {n:>6} ({100*n/len(train_ds):>5.2f}%)")
     print()
 
-    train_loader = DataLoader(train_ds, args.batch_size, shuffle=True,
-                              num_workers=args.num_workers, pin_memory=True)
-    val_loader = DataLoader(val_ds, args.batch_size, shuffle=False,
-                            num_workers=args.num_workers, pin_memory=True)
+    # DataLoader settings aligned with Colab version:
+    # - persistent_workers=True: keep workers alive across epochs (preserves aug_rng state)
+    # - prefetch_factor=2: each worker prefetches 2 batches
+    # Note: persistent_workers requires num_workers > 0
+    use_persistent = args.persistent_workers and args.num_workers > 0
+    loader_kwargs = dict(
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=use_persistent,
+    )
+    if args.num_workers > 0:
+        loader_kwargs["prefetch_factor"] = args.prefetch_factor
+
+    train_loader = DataLoader(train_ds, args.batch_size, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, args.batch_size, shuffle=False, **loader_kwargs)
+
+    print(f"DataLoader: num_workers={args.num_workers}, "
+          f"persistent_workers={use_persistent}, "
+          f"prefetch_factor={args.prefetch_factor if args.num_workers > 0 else 'N/A'}\n")
 
     model = build_swin3d(num_classes, pretrained=True, T=DEFAULTS["T"],
                          hidden_dim=args.mlp_hidden_dim, dropout=args.mlp_dropout).to(device)
