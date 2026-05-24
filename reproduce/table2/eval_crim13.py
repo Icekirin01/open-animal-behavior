@@ -111,7 +111,9 @@ class WindowPredictionDataset(Dataset):
 
     def _generate_windows(self):
         windows, mappings = [], []
-        for vp, lp in zip(self.video_paths, self.label_paths):
+        for vp, lp in tqdm(zip(self.video_paths, self.label_paths),
+                           total=len(self.video_paths),
+                           desc="📂 Loading videos & building windows"):
             df = pd.read_csv(lp)
             labels_oh = df.iloc[:, 0:NUM_CLASSES].values
             vr = VideoReader(vp, ctx=cpu(0))
@@ -190,15 +192,20 @@ def build_model(num_classes, hidden_dim=512, dropout=0.3):
 def evaluate_framewise(model, loader, mappings, smooth_k, device):
     model.eval()
     wp = []
+
+    # ① Inference: window-level probabilities
+    print("\n🔄 Step 1/4: Computing window probabilities...")
     with torch.no_grad():
-        for videos, _ in tqdm(loader, desc="Testing", leave=False):
+        for videos, _ in tqdm(loader, desc="🧠 Inference"):
             videos = videos.to(device)
             with autocast():
                 wp.extend(torch.softmax(model(videos), dim=1).cpu().numpy())
     wp = np.array(wp)
 
+    # ② Aggregate frame-level predictions
+    print("🔄 Step 2/4: Aggregating frame-level predictions...")
     all_labels, all_fp = [], []
-    for m in mappings:
+    for m in tqdm(mappings, desc="📊 Aggregating frames"):
         labels, f2w = m["labels"], m["frame_to_windows"]
         F = len(labels)
         fp = np.zeros((F, NUM_CLASSES), dtype=np.float32)
@@ -210,6 +217,9 @@ def evaluate_framewise(model, loader, mappings, smooth_k, device):
         all_fp.append(fp)
         all_labels.extend(np.argmax(labels, axis=1))
 
+    # ③ Temporal smoothing
+    print("🔄 Step 3/4: Applying temporal smoothing...")
+
     def smooth(p, k):
         if k <= 1:
             return p
@@ -220,10 +230,12 @@ def evaluate_framewise(model, loader, mappings, smooth_k, device):
         return o
 
     preds, raw = [], []
-    for fp in all_fp:
+    for fp in tqdm(all_fp, desc="🔧 Smoothing"):
         raw.extend(fp.tolist())
         preds.extend(np.argmax(smooth(fp, smooth_k), axis=1).tolist())
 
+    # ④ Metrics
+    print("🔄 Step 4/4: Calculating metrics...")
     lbls = list(range(NUM_CLASSES))
     f1_pc = f1_score(all_labels, preds, average=None, labels=lbls, zero_division=0)
     f1_m = f1_score(all_labels, preds, average="macro")
@@ -237,6 +249,7 @@ def evaluate_framewise(model, loader, mappings, smooth_k, device):
         average_precision_score(oh[:, c], raw[:, c]) if oh[:, c].sum() > 0 else 0.0
         for c in range(NUM_CLASSES)
     ])
+    print("✅ Metrics calculation complete!")
 
     return {
         "f1_per_class": f1_pc, "f1_macro": f1_m, "cm": cm,
@@ -260,24 +273,34 @@ def main():
     print(f"  Model: {args.model_path}")
     print(f"  Classes: {NUM_CLASSES}\n")
 
+    # Step 1: Find video/label pairs
+    print("📂 Scanning for video/label pairs...")
     vids, labs = get_video_and_label_paths(args.test_video_dir, args.test_label_dir)
-    print(f"  Test videos: {len(vids)}")
+    print(f"  ✅ Test videos found: {len(vids)}\n")
 
+    # Step 2: Build dataset (has its own tqdm)
+    print("📦 Creating test dataset...")
     ds = WindowPredictionDataset(vids, labs, args.window_size, args.stride,
                                  custom_video_transform, args.skip)
     loader = DataLoader(ds, args.batch_size, shuffle=False,
                         num_workers=args.num_workers, pin_memory=True)
-    print(f"  Test windows: {len(ds)}\n")
+    print(f"  ✅ Test windows: {len(ds)}\n")
 
+    # Step 3: Load model
+    print("🔧 Loading model...")
     model = build_model(NUM_CLASSES, args.mlp_hidden_dim, args.mlp_dropout).to(device)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
-    print("  ✅ Model loaded\n")
+    print(f"  ✅ Model loaded (params: {sum(p.numel() for p in model.parameters()):,})\n")
 
+    # Step 4: Evaluate (has its own tqdm inside)
+    print(f"{'='*70}")
+    print("🚀 Starting Evaluation")
+    print(f"{'='*70}")
     metrics = evaluate_framewise(model, loader, ds.frame_mappings,
                                  args.smooth_window_size, device)
 
     # Results
-    print(f"{'='*70}")
+    print(f"\n{'='*70}")
     print("RESULTS")
     print(f"{'='*70}\n")
     print(f"  F1 Macro:  {metrics['f1_macro']:.4f}")
