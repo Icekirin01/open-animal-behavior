@@ -673,7 +673,40 @@ GREEN_THEME = gr.themes.Soft(
     neutral_hue=gr.themes.colors.gray,
 )
 
-with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME) as demo:
+# ====================== Custom CSS ======================
+# 全域樣式覆蓋：字體全黑、標題放大、格線加深、背景加深對比更明顯。
+CUSTOM_CSS = """
+/* 背景加深（配綠色主題的偏綠灰），區塊維持亮白 → 對比更明顯 */
+.gradio-container { background: #cdd6cd !important; }
+.gr-box, .block, .form, .gr-panel, .gr-accordion,
+.gradio-container .prose { background: #ffffff !important; }
+
+/* 全域字體轉全黑（覆蓋 Gradio 灰色 secondary / tertiary 變數） */
+.gradio-container, .gradio-container * {
+    color: #000000 !important;
+    --color-text-primary: #000000;
+    --color-text-secondary: #000000;
+    --color-text-tertiary: #000000;
+}
+
+/* 區塊 / 元件邊框加深加粗 → 格線更明顯 */
+.gr-box, .block, .form, .gr-panel, .gr-input, .gr-dropdown,
+input, textarea, select, .gr-accordion {
+    border: 1.5px solid #555555 !important;
+}
+
+/* 區塊標題（Markdown 的 h1 / h2 / h3）放大一點點 */
+.gradio-container h1 { font-size: 30px !important; font-weight: 700 !important; }
+.gradio-container h2 { font-size: 22px !important; font-weight: 700 !important; }
+.gradio-container h3 { font-size: 18px !important; font-weight: 700 !important; }
+
+/* 元件 label 也轉黑加粗 */
+label, .gr-input-label, span[data-testid="block-info"] {
+    color: #000000 !important; font-weight: 600 !important;
+}
+"""
+
+with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_CSS) as demo:
     gr.Markdown("# Animal Social Behavior Inference")
     gr.Markdown("HuggingFace & Local models — auto config detection — behavior filtering")
 
