@@ -1514,16 +1514,17 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         # ===== LEFT =====
         with gr.Column(scale=1, min_width=250):
             gr.Markdown("### ① Select model")
-            model_dd=gr.Dropdown(label="Base model",choices=[],interactive=True)
+            with gr.Group():
+                model_dd=gr.Dropdown(label="Base model",choices=[],interactive=True)
+                model_st=gr.Textbox(label="Status",interactive=False,lines=4)
             load_btn=gr.Button("📥 Load pretrained",variant="primary")
-            model_st=gr.Textbox(label="Status",interactive=False,lines=4)
             gr.Markdown("---")
             gr.Markdown("### ② Load data")
             vdir_in=gr.Textbox(label="Video directory",value=DEFAULT_VIDEO_DIR,
                 placeholder="e.g. /content/drive/My Drive/videos/train/")
-            ldir_in=gr.Textbox(label="Label directory",value=DEFAULT_LABEL_DIR,
-                placeholder="e.g. /content/drive/My Drive/labels/")
             with gr.Group():
+                ldir_in=gr.Textbox(label="Label directory",value=DEFAULT_LABEL_DIR,
+                    placeholder="e.g. /content/drive/My Drive/labels/")
                 odir_in=gr.Textbox(label="Output directory",value=DEFAULT_OUTPUT_DIR,
                     placeholder="e.g. /content/drive/My Drive/trained_models/")
                 scan_st=gr.Textbox(label="Folder status",interactive=False,lines=1)
@@ -1553,15 +1554,16 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
 
             # Head type + mapping dropdowns
             gr.Markdown("### 🏷️ Label mapping")
-            head_mode_dd=gr.Dropdown(label="Head type",choices=["Pretrain head","New head"],value="Pretrain head",interactive=True)
+            with gr.Group():
+                head_mode_dd=gr.Dropdown(label="Head type",choices=["Pretrain head","New head"],value="Pretrain head",interactive=True)
 
-            # Pre-build MAX_LABELS dropdown slots (hidden by default)
-            map_dds = []
-            for i in range(MAX_LABELS):
-                dd = gr.Dropdown(label=f"label_{i}", choices=[], value=None, interactive=True, visible=False)
-                map_dds.append(dd)
+                # Pre-build MAX_LABELS dropdown slots (hidden by default)
+                map_dds = []
+                for i in range(MAX_LABELS):
+                    dd = gr.Dropdown(label=f"label_{i}", choices=[], value=None, interactive=True, visible=False)
+                    map_dds.append(dd)
 
-            mapping_summary=gr.HTML("")
+                mapping_summary=gr.HTML("")
 
             # Hidden video dropdown
             vid_dd=gr.Dropdown(label="Video",choices=[],interactive=True,visible=False)
@@ -1583,8 +1585,8 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 nw_in=gr.Slider(minimum=0,maximum=8,step=1,value=2,
                                 label="DataLoader workers",
                                 info="0 = single process (safest, slowest). 2 = good for Colab. 4+ may crash with large videos.")
-            cache_local_cb=gr.Checkbox(label="Cache videos to local disk before training",value=True,
-                info="Copy from Drive to /content first (5-30× faster reads). Progress shown when training starts.")
+                cache_local_cb=gr.Checkbox(label="Cache videos to local disk before training",value=True,
+                    info="Copy from Drive to /content first (5-30× faster reads). Progress shown when training starts.")
 
             with gr.Accordion("🎨 Augmentation", open=False):
                 gr.Markdown("**Spatial** — applied to the whole window consistently")
