@@ -704,11 +704,23 @@ input, textarea, select, .gr-accordion {
 label, .gr-input-label, span[data-testid="block-info"] {
     color: #000000 !important; font-weight: 600 !important;
 }
+
+/* 分頁列（HuggingFace / Local folder）給白底，讓它跟背景區隔開 */
+.tab-nav, div[role="tablist"] {
+    background: #ffffff !important;
+    border: 1.5px solid #555555 !important;
+    border-radius: 8px 8px 0 0 !important;
+    padding: 2px 2px 0 2px !important;
+}
+.tab-nav button, div[role="tablist"] button {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-weight: 600 !important;
+}
 """
 
 with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_CSS) as demo:
-    gr.Markdown("# Animal Social Behavior Inference")
-    gr.Markdown("HuggingFace & Local models — auto config detection — behavior filtering")
+    gr.Markdown("# Animal Social Behavior Inference\nHuggingFace & Local models — auto config detection — behavior filtering")
 
     cursor_state = gr.Textbox(value=S["_cursor_data"], visible=False)
 
@@ -717,8 +729,8 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
             gr.Markdown("### ① Select model")
             with gr.Tabs():
                 with gr.TabItem("☁️ HuggingFace"):
-                    repo_in = gr.Textbox(value=HF_REPO_ID, label="HF Repo ID", interactive=True)
                     with gr.Group():
+                        repo_in = gr.Textbox(value=HF_REPO_ID, label="HF Repo ID", interactive=True)
                         hf_model_dd = gr.Dropdown(label="Model", choices=[], interactive=True)
                         model_st = gr.Textbox(label="Model status", interactive=False, lines=5)
                     hf_load_btn = gr.Button("📥 Load model", variant="primary")
@@ -757,7 +769,9 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
 
         with gr.Column(scale=1, min_width=260):
             gr.Markdown("### ③ Inference")
-            video_dd = gr.Dropdown(label="Select video", choices=[], interactive=True)
+            with gr.Group():
+                video_dd = gr.Dropdown(label="Select video", choices=[], interactive=True)
+                batch_log_tb = gr.Textbox(label="Batch log", interactive=False, lines=6)
             with gr.Accordion("⚙️ Advanced settings", open=False):
                 infer_info_html = gr.HTML("<p style='color:#aaa;font-size:12px;'>Load a model to see window/stride settings</p>")
                 nw_in = gr.Slider(minimum=0, maximum=8, step=1, value=0,
@@ -766,14 +780,14 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
                 cache_local_cb = gr.Checkbox(label="Cache videos to local disk before inference", value=False,
                                              info="Copies videos to local SSD first. Useful when reading from network/Drive.")
             batch_btn = gr.Button("📦 Batch inference (all videos)", variant="primary", size="lg")
-            batch_log_tb = gr.Textbox(label="Batch log", interactive=False, lines=6)
             run_btn = gr.Button("🚀 Run inference (single)", variant="secondary")
             cancel_btn = gr.Button("⛔ Cancel inference", variant="stop")
             gr.Markdown("---")
             gr.Markdown("### ④ Export")
-            exp_fmt = gr.Dropdown(label="Output format", choices=["One-hot CSV (per-frame)", "BORIS event log"], value="One-hot CSV (per-frame)", interactive=True)
-            exp_prev = gr.HTML("<p style='color:#aaa;font-size:13px;'>Run inference first</p>")
-            out_dir = gr.Textbox(label="Save to", value=DEFAULT_OUTPUT_DIR)
+            with gr.Group():
+                exp_fmt = gr.Dropdown(label="Output format", choices=["One-hot CSV (per-frame)", "BORIS event log"], value="One-hot CSV (per-frame)", interactive=True)
+                exp_prev = gr.HTML("<p style='color:#aaa;font-size:13px;'>Run inference first</p>")
+                out_dir = gr.Textbox(label="Save to", value=DEFAULT_OUTPUT_DIR)
             exp_cur = gr.Button("💾 Export current video", variant="primary")
             exp_all = gr.Button("📦 Export all (batch)")
             exp_log = gr.Textbox(label="Export log", interactive=False, lines=6)
