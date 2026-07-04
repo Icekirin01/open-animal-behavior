@@ -1505,8 +1505,7 @@ def load_demo_training(repo, val_pct, val_seed, head_mode, *dd_vals):
 # ====================== GUI ======================
 
 with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
-    gr.Markdown("# Animal Behavior Model Training")
-    gr.Markdown("Fine-tune from pretrained — preview labels & configure mapping before training")
+    gr.Markdown("# Animal Behavior Model Training\nFine-tune from pretrained — preview labels & configure mapping before training")
 
     cursor_state = gr.Textbox(value=S["_cursor_data"], visible=False)
     repo_in = gr.Textbox(value=HF_REPO_ID, visible=False)
@@ -1524,19 +1523,21 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 placeholder="e.g. /content/drive/My Drive/videos/train/")
             ldir_in=gr.Textbox(label="Label directory",value=DEFAULT_LABEL_DIR,
                 placeholder="e.g. /content/drive/My Drive/labels/")
-            odir_in=gr.Textbox(label="Output directory",value=DEFAULT_OUTPUT_DIR,
-                placeholder="e.g. /content/drive/My Drive/trained_models/")
+            with gr.Group():
+                odir_in=gr.Textbox(label="Output directory",value=DEFAULT_OUTPUT_DIR,
+                    placeholder="e.g. /content/drive/My Drive/trained_models/")
+                scan_st=gr.Textbox(label="Folder status",interactive=False,lines=1)
             demo_btn=gr.Button("🎯 Load Demo",variant="secondary",size="sm")
             scan_d=gr.Button("📂 Load folder",variant="secondary")
-            scan_st=gr.Textbox(label="Folder status",interactive=False,lines=1)
 
         # ===== CENTER =====
         with gr.Column(scale=2, min_width=400):
-            progress_html=gr.HTML("")
-            info_html=gr.HTML("<p style='color:#aaa;'>Load data to preview</p>")
-            frame_img=gr.Image(label="Frame preview",type="numpy",interactive=False)
-            timeline_html=gr.HTML("")
-            scrubber=gr.Slider(minimum=0,maximum=100,step=1,value=0,label="Frame",interactive=True)
+            with gr.Group():
+                progress_html=gr.HTML("")
+                info_html=gr.HTML("<p style='color:#aaa;'>Load data to preview</p>")
+                frame_img=gr.Image(label="Frame preview",type="numpy",interactive=False)
+                timeline_html=gr.HTML("")
+                scrubber=gr.Slider(minimum=0,maximum=100,step=1,value=0,label="Frame",interactive=True)
             with gr.Row():
                 prev_btn=gr.Button("◀ Prev",size="sm")
                 nav_md=gr.Markdown("*Load data first*")
@@ -1568,19 +1569,20 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         # ===== RIGHT =====
         with gr.Column(scale=1, min_width=280):
             gr.Markdown("### ③ Train")
-            vr_in=gr.Slider(minimum=0,maximum=50,step=5,value=15,label="Validation ratio (%)",interactive=True)
-            with gr.Row():
-                ep_in=gr.Number(label="Epochs",value=5,precision=0)
-                bs_in=gr.Number(label="Batch",value=8,precision=0)
-            with gr.Row():
-                lr_in=gr.Textbox(label="LR",value="3.8e-5")
-            gr.HTML("<div style='font-size:12px;color:#555;padding:6px 10px;background:#f7f7f7;border-radius:6px;margin:4px 0;'><b>Window:</b> 16 frames &nbsp;·&nbsp; <b>Stride:</b> 4 frames (fixed)</div>")
-            with gr.Row():
-                val_seed_in=gr.Number(label="Val seed",value=1337,precision=0,info="Split reproducibility")
-                train_seed_in=gr.Number(label="Train seed",value=2025,precision=0,info="Augmentation reproducibility")
-            nw_in=gr.Slider(minimum=0,maximum=8,step=1,value=2,
-                            label="DataLoader workers",
-                            info="0 = single process (safest, slowest). 2 = good for Colab. 4+ may crash with large videos.")
+            with gr.Group():
+                vr_in=gr.Slider(minimum=0,maximum=50,step=5,value=15,label="Validation ratio (%)",interactive=True)
+                with gr.Row():
+                    ep_in=gr.Number(label="Epochs",value=5,precision=0)
+                    bs_in=gr.Number(label="Batch",value=8,precision=0)
+                with gr.Row():
+                    lr_in=gr.Textbox(label="LR",value="3.8e-5")
+                gr.HTML("<div style='font-size:12px;color:#555;padding:6px 10px;background:#f7f7f7;border-radius:6px;margin:4px 0;'><b>Window:</b> 16 frames &nbsp;·&nbsp; <b>Stride:</b> 4 frames (fixed)</div>")
+                with gr.Row():
+                    val_seed_in=gr.Number(label="Val seed",value=1337,precision=0,info="Split reproducibility")
+                    train_seed_in=gr.Number(label="Train seed",value=2025,precision=0,info="Augmentation reproducibility")
+                nw_in=gr.Slider(minimum=0,maximum=8,step=1,value=2,
+                                label="DataLoader workers",
+                                info="0 = single process (safest, slowest). 2 = good for Colab. 4+ may crash with large videos.")
             cache_local_cb=gr.Checkbox(label="Cache videos to local disk before training",value=True,
                 info="Copy from Drive to /content first (5-30× faster reads). Progress shown when training starts.")
 
