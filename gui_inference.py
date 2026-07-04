@@ -718,30 +718,36 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
             with gr.Tabs():
                 with gr.TabItem("☁️ HuggingFace"):
                     repo_in = gr.Textbox(value=HF_REPO_ID, label="HF Repo ID", interactive=True)
-                    hf_model_dd = gr.Dropdown(label="Model", choices=[], interactive=True)
+                    with gr.Group():
+                        hf_model_dd = gr.Dropdown(label="Model", choices=[], interactive=True)
+                        model_st = gr.Textbox(label="Model status", interactive=False, lines=5)
                     hf_load_btn = gr.Button("📥 Load model", variant="primary")
                 with gr.TabItem("💾 Local folder"):
                     local_dir_in = gr.Textbox(label="Model folder path", value=DEFAULT_LOCAL_MODEL_DIRS[0] if DEFAULT_LOCAL_MODEL_DIRS else "", interactive=True)
-                    local_model_dd = gr.Dropdown(label="Model (.pth)", choices=[], interactive=True)
-                    local_scan_btn = gr.Button("🔍 Scan folder", variant="secondary", size="sm")
-                    local_load_btn = gr.Button("📥 Load model", variant="primary")
-            model_st = gr.Textbox(label="Model status", interactive=False, lines=5)
+                    with gr.Group():
+                        local_model_dd = gr.Dropdown(label="Model (.pth)", choices=[], interactive=True)
+                        model_st_local = gr.Textbox(label="Model status", interactive=False, lines=5)
+                    with gr.Row():
+                        local_scan_btn = gr.Button("🔍 Scan folder", variant="secondary", size="sm")
+                        local_load_btn = gr.Button("📥 Load model", variant="primary")
             gr.Markdown("---")
             gr.Markdown("### ② Load video folder")
-            vdir_in = gr.Textbox(label="Video folder path", value=DEFAULT_VIDEO_DIR)
+            with gr.Group():
+                vdir_in = gr.Textbox(label="Video folder path", value=DEFAULT_VIDEO_DIR)
+                scan_st = gr.Textbox(label="Folder status", interactive=False, lines=1)
             demo_btn = gr.Button("🎯 Load Demo", variant="secondary", size="sm")
             load_folder_btn = gr.Button("📂 Load folder", variant="secondary")
-            scan_st = gr.Textbox(label="Folder status", interactive=False, lines=1)
 
         with gr.Column(scale=2, min_width=400):
-            toggle_label_html = gr.HTML("<p style='color:#aaa;font-size:13px;'>Load a model to see behaviors</p>")
-            behavior_toggles = gr.CheckboxGroup(label="Active behaviors (unchecked → merged to Other)", choices=[], value=[], interactive=True, visible=False)
-            toggle_status = gr.Textbox(interactive=False, lines=1, visible=False, show_label=False)
-            batch_prog = gr.HTML("")
-            info_html = gr.HTML("<p style='color:#aaa;'>Load a model and run inference</p>")
-            frame_img = gr.Image(label="Frame preview", type="numpy", interactive=False)
-            timeline_html = gr.HTML("")
-            scrubber = gr.Slider(minimum=0, maximum=100, step=1, value=0, label="Frame", interactive=True)
+            with gr.Group():
+                toggle_label_html = gr.HTML("<p style='color:#aaa;font-size:13px;'>Load a model to see behaviors</p>")
+                behavior_toggles = gr.CheckboxGroup(label="Active behaviors (unchecked → merged to Other)", choices=[], value=[], interactive=True, visible=False)
+                toggle_status = gr.Textbox(interactive=False, lines=1, visible=False, show_label=False)
+                batch_prog = gr.HTML("")
+                info_html = gr.HTML("<p style='color:#aaa;'>Load a model and run inference</p>")
+                frame_img = gr.Image(label="Frame preview", type="numpy", interactive=False)
+                timeline_html = gr.HTML("")
+                scrubber = gr.Slider(minimum=0, maximum=100, step=1, value=0, label="Frame", interactive=True)
             with gr.Row():
                 prev_btn = gr.Button("◀ Previous video", size="sm")
                 nav_md_out = gr.Markdown("*No results yet*")
@@ -774,8 +780,8 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
 
     demo.load(list_models, [repo_in], [hf_model_dd, model_st])
     hf_load_btn.click(load_model_hf, [repo_in, hf_model_dd], [model_st, behavior_toggles, toggle_label_html, infer_info_html])
-    local_scan_btn.click(scan_local_models, [local_dir_in], [local_model_dd, model_st])
-    local_load_btn.click(load_model_local, [local_dir_in, local_model_dd], [model_st, behavior_toggles, toggle_label_html, infer_info_html])
+    local_scan_btn.click(scan_local_models, [local_dir_in], [local_model_dd, model_st_local])
+    local_load_btn.click(load_model_local, [local_dir_in, local_model_dd], [model_st_local, behavior_toggles, toggle_label_html, infer_info_html])
     behavior_toggles.change(on_toggle_change, [behavior_toggles], [toggle_status])
 
     # Shared outputs for demo/load folder: video dropdown, status, preview frame, info, scrubber, timeline, cursor
