@@ -695,6 +695,31 @@ input, textarea, select, .gr-accordion {
     border: 1.5px solid #555555 !important;
 }
 
+/* gr.Group() 內的元件不要各自畫完整外框 → 讓它們真正黏成一整塊。
+   只保留元件之間的分隔線（上邊框），最外層 group 才有完整外框。 */
+.gr-group .block, .gr-group .form,
+.gr-group > div > .block, .gr-group > div > .form {
+    border: none !important;
+    border-radius: 0 !important;
+}
+.gr-group {
+    border: 1.5px solid #555555 !important;
+    border-radius: 8px !important;
+    overflow: hidden !important;
+}
+/* group 內相鄰元件之間補一條上分隔線 */
+.gr-group .block + .block,
+.gr-group .form + .form,
+.gr-group .form + .block,
+.gr-group .block + .form {
+    border-top: 1px solid #999999 !important;
+}
+/* group 內的實際輸入框仍要有邊框，才看得出可輸入區 */
+.gr-group input, .gr-group textarea, .gr-group select {
+    border: 1.5px solid #555555 !important;
+    border-radius: 6px !important;
+}
+
 /* 區塊標題（Markdown 的 h1 / h2 / h3）放大一點點 */
 .gradio-container h1 { font-size: 30px !important; font-weight: 700 !important; }
 .gradio-container h2 { font-size: 22px !important; font-weight: 700 !important; }
