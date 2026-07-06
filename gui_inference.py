@@ -689,33 +689,16 @@ CUSTOM_CSS = """
     --color-text-tertiary: #000000;
 }
 
-/* 區塊 / 元件邊框加深加粗 → 格線更明顯 */
-.gr-box, .block, .form, .gr-panel, .gr-input, .gr-dropdown,
-input, textarea, select, .gr-accordion {
+/* 邊框策略：不要對每個 .block / .form 畫完整外框（那會讓 gr.Group 內的
+   元件各自變成一個框、無法黏合）。只對「實際輸入元件」和 accordion 畫框，
+   格線一樣清楚，但 group 內的元件會自然黏成一整塊。 */
+input, textarea, select,
+.gr-input, .gr-dropdown, .gr-accordion {
     border: 1.5px solid #555555 !important;
 }
-
-/* gr.Group() 內的元件不要各自畫完整外框 → 讓它們真正黏成一整塊。
-   只保留元件之間的分隔線（上邊框），最外層 group 才有完整外框。 */
-.gr-group .block, .gr-group .form,
-.gr-group > div > .block, .gr-group > div > .form {
-    border: none !important;
-    border-radius: 0 !important;
-}
-.gr-group {
-    border: 1.5px solid #555555 !important;
-    border-radius: 8px !important;
-    overflow: hidden !important;
-}
-/* group 內相鄰元件之間補一條上分隔線 */
-.gr-group .block + .block,
-.gr-group .form + .form,
-.gr-group .form + .block,
-.gr-group .block + .form {
-    border-top: 1px solid #999999 !important;
-}
-/* group 內的實際輸入框仍要有邊框，才看得出可輸入區 */
-.gr-group input, .gr-group textarea, .gr-group select {
+/* 下拉選單本體（Gradio 把 dropdown 包在一層 div，需要單獨補框） */
+.gradio-container [class*="dropdown"] > label > div,
+.gradio-container [data-testid="dropdown"] {
     border: 1.5px solid #555555 !important;
     border-radius: 6px !important;
 }
