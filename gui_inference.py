@@ -711,11 +711,21 @@ label, .gr-input-label, span[data-testid="block-info"] {
     border: 1.5px solid #555555 !important;
     border-radius: 8px 8px 0 0 !important;
     padding: 2px 2px 0 2px !important;
+    margin-bottom: 0 !important;
 }
 .tab-nav button, div[role="tablist"] button {
     background: #ffffff !important;
     color: #000000 !important;
     font-weight: 600 !important;
+}
+/* 分頁內容緊貼分頁列：去掉上方間隙、上緣不要圓角，讓它跟分頁列連成一體 */
+.tabitem {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}
+.tabitem > .gap:first-child,
+.tabitem > *:first-child {
+    margin-top: 0 !important;
 }
 """
 
@@ -735,8 +745,8 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
                         model_st = gr.Textbox(label="Model status", interactive=False, lines=5)
                     hf_load_btn = gr.Button("📥 Load model", variant="primary")
                 with gr.TabItem("💾 Local folder"):
-                    local_dir_in = gr.Textbox(label="Model folder path", value=DEFAULT_LOCAL_MODEL_DIRS[0] if DEFAULT_LOCAL_MODEL_DIRS else "", interactive=True)
                     with gr.Group():
+                        local_dir_in = gr.Textbox(label="Model folder path", value=DEFAULT_LOCAL_MODEL_DIRS[0] if DEFAULT_LOCAL_MODEL_DIRS else "", interactive=True)
                         local_model_dd = gr.Dropdown(label="Model (.pth)", choices=[], interactive=True)
                         model_st_local = gr.Textbox(label="Model status", interactive=False, lines=5)
                     with gr.Row():
