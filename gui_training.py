@@ -1454,10 +1454,16 @@ CUSTOM_CSS = """
     --color-text-tertiary: #000000;
 }
 
-/* 區塊 / 元件邊框加深加粗 → 格線更明顯 */
-.gr-box, .block, .form, .gr-panel, .gr-input, .gr-dropdown,
-input, textarea, select, .gr-accordion {
+/* 邊框策略：不要對每個 .block / .form 畫完整外框（那會讓 gr.Group 內的
+   元件各自變成一個框、無法黏合）。只對「實際輸入元件」和 accordion 畫框。 */
+input, textarea, select,
+.gr-input, .gr-dropdown, .gr-accordion {
     border: 1.5px solid #555555 !important;
+}
+.gradio-container [class*="dropdown"] > label > div,
+.gradio-container [data-testid="dropdown"] {
+    border: 1.5px solid #555555 !important;
+    border-radius: 6px !important;
 }
 
 /* 區塊標題（Markdown 的 h1 / h2 / h3）放大一點點 */
