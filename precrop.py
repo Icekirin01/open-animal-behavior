@@ -92,14 +92,16 @@ def list_videos(video_dir):
     return sorted(set(vids))
 
 
-def crop_folder(model_path, video_dir, crop_padding=0.3, output_dir=None, device="cpu"):
+def crop_folder(model_path, video_dir, crop_padding=0.3, output_dir=None, device=0):
     """
     Crop every video in ``video_dir`` and write results to ``output_dir``
     (defaults to ``video_dir/cropped``).
 
-    ``device`` controls where YOLO runs. Default "cpu" keeps the GPU free for
-    the behavior-recognition model already loaded by the GUI (avoids the two
-    models fighting over VRAM). Pass "cuda"/0 to force GPU.
+    ``device`` controls where YOLO runs. Default 0 = GPU. YOLO shares the GPU
+    with the behavior-recognition model already loaded by the GUI, so after
+    cropping finishes this function resets the tracker state and calls
+    ``torch.cuda.empty_cache()`` to hand VRAM back. If you hit CUDA OOM on a
+    small card, pass ``device="cpu"``.
 
     Reads frames with decord, writes with imageio-ffmpeg.
 

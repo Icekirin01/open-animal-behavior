@@ -305,7 +305,7 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
 
     out_dir, outputs = None, []
     try:
-        for ev in precrop.crop_folder(yolo_model_path, video_dir, crop_padding=crop_padding, device="cpu"):
+        for ev in precrop.crop_folder(yolo_model_path, video_dir, crop_padding=crop_padding, device=0):
             if ev["type"] == "progress":
                 frac = (ev["frame"] / max(ev["total"], 1)) if ev["total"] else 0
                 # overall progress across videos
