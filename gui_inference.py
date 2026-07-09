@@ -18,6 +18,7 @@ from huggingface_hub import hf_hub_download, list_repo_files
 from models import build_model_from_config
 from config_utils import normalize_config, find_config_for_pth
 from inference import preprocess, infer_video_gen, remap_with_disabled, get_others_idx
+import precrop
 
 # ==================== 👇 修改這裡 👇 ====================
 HF_REPO_ID         = "yiheng266/animal-social-models"
@@ -270,6 +271,57 @@ def scan_videos_and_preview(vdir):
         T = 0; info = ""; img = None
     return (gr.update(choices=v, value=vf), f"✅ {len(v)} videos",
             img, info, gr.update(maximum=max(T - 1, 0), value=0), "", S["_cursor_data"])
+
+# ====================== Pre-crop (YOLO) ======================
+
+def run_precrop(yolo_model_path, video_dir, crop_padding):
+    """Crop all videos in video_dir with the YOLO tracker, then switch the
+    active folder to the cropped output and preview the first cropped clip.
+
+    Yields (crop_status, *scan_videos_and_preview outputs). While cropping,
+    the 7 preview outputs are left unchanged (gr.update()).
+    """
+    hold = (U,) * 7  # video_dd, scan_st, frame_img, info_html, scrubber, timeline, cursor
+
+    if not yolo_model_path:
+        yield "<p style='color:#e74c3c;'>❌ Enter the YOLO model path (.pt)</p>", *hold
+        return
+    if not video_dir or not os.path.isdir(video_dir):
+        yield "<p style='color:#e74c3c;'>❌ Load a valid video folder first</p>", *hold
+        return
+
+    prog_state = {"msg": ""}
+    def _cb(name, fi, total, vi, vn):
+        prog_state["msg"] = (f"✂️ [{vi}/{vn}] {name} — frame {fi}/{total}")
+
+    t0 = time.perf_counter()
+    yield "<p style='color:#D85A30;font-weight:600;'>✂️ Cropping… (this can take a while)</p>", *hold
+
+    try:
+        crop_padding = float(crop_padding)
+    except Exception:
+        crop_padding = 0.3
+
+    try:
+        out_dir, outputs = precrop.crop_folder(
+            yolo_model_path, video_dir, crop_padding=crop_padding, progress=_cb
+        )
+    except Exception as e:
+        yield f"<p style='color:#e74c3c;'>❌ Crop failed: {e}</p>", *hold
+        return
+
+    if not outputs:
+        yield "<p style='color:#e74c3c;'>❌ No videos were cropped</p>", *hold
+        return
+
+    elapsed = time.perf_counter() - t0
+    status = (f"<p style='color:#2e7d32;font-weight:600;'>✅ Cropped {len(outputs)} video(s) "
+              f"in {elapsed:.1f}s → switched to <code>{out_dir}</code></p>")
+
+    # Switch active folder to the cropped output and preview it.
+    scan_out = scan_videos_and_preview(out_dir)
+    yield status, *scan_out
+
 
 # ====================== HTML Builders ======================
 
@@ -768,6 +820,17 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
             demo_btn = gr.Button("🎯 Load Demo", variant="secondary", size="sm")
             load_folder_btn = gr.Button("📂 Load folder", variant="secondary")
 
+            gr.Markdown("---")
+            precrop_toggle = gr.Checkbox(label="✂️ Enable pre-crop (YOLO tracker)", value=False)
+            with gr.Group(visible=False) as precrop_panel:
+                yolo_model_in = gr.Textbox(
+                    label="YOLO model path (.pt on Drive)",
+                    value="/content/drive/MyDrive/squid/model/best.pt")
+                crop_pad_in = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, value=0.3,
+                                        label="Crop padding")
+                run_crop_btn = gr.Button("✂️ Run crop", variant="primary")
+                crop_status = gr.HTML("")
+
         with gr.Column(scale=2, min_width=400):
             with gr.Group():
                 toggle_label_html = gr.HTML("<p style='color:#aaa;font-size:13px;'>Load a model to see behaviors</p>")
@@ -820,6 +883,14 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     load_outputs = [video_dd, scan_st, frame_img, info_html, scrubber, timeline_html, cursor_state]
     demo_btn.click(load_demo_inference, [repo_in], load_outputs)
     load_folder_btn.click(scan_videos_and_preview, [vdir_in], load_outputs)
+
+    # Pre-crop: toggle panel + run crop then swap folder to cropped output
+    precrop_toggle.change(lambda on: gr.update(visible=on), [precrop_toggle], [precrop_panel])
+    run_crop_btn.click(
+        run_precrop,
+        [yolo_model_in, vdir_in, crop_pad_in],
+        [crop_status, video_dd, scan_st, frame_img, info_html, scrubber, timeline_html, cursor_state],
+    )
 
     # Video selection triggers preview (frame + scrubber setup)
     video_dd.change(on_video_select, [video_dd], [frame_img, info_html, scrubber, timeline_html, cursor_state])
