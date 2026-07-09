@@ -6,15 +6,18 @@ with a YOLO model, tracks it across frames (BoT-SORT), smooths the crop box
 (EMA + speed clamp), then crops + upscales each frame to a fixed size and
 writes a new video per source clip.
 
-Only CROP_PADDING and the model path are exposed in the GUI; everything else
-uses the same defaults as the original script.
+Reading uses decord (same as the rest of the GUI); writing uses imageio /
+imageio-ffmpeg, which is far more reliable on Colab than cv2.VideoWriter's
+mp4v backend (that one silently produces a broken writer and can segfault the
+kernel). Only CROP_PADDING and the model path are exposed in the GUI;
+everything else uses the same defaults as the original script.
 """
 
-import os, glob, time
+import os, glob, gc
 from pathlib import Path
 
-import cv2
 import numpy as np
+import cv2  # used only for resize (crop_and_upscale), not for read/write
 
 # ---- fixed defaults (same as the original Colab script) ----
 CONF_THRESHOLD = 0.5
@@ -89,15 +92,27 @@ def list_videos(video_dir):
     return sorted(set(vids))
 
 
-def crop_folder(model_path, video_dir, crop_padding=0.3, output_dir=None, progress=None):
+def crop_folder(model_path, video_dir, crop_padding=0.3, output_dir=None, device="cpu"):
     """
     Crop every video in ``video_dir`` and write results to ``output_dir``
-    (defaults to ``video_dir/cropped``). ``progress`` is an optional callback
-    ``progress(video_name, frame_idx, total_frames, vid_i, vid_n)`` for UI updates.
+    (defaults to ``video_dir/cropped``).
 
-    Returns (output_dir, list_of_output_paths).
+    ``device`` controls where YOLO runs. Default "cpu" keeps the GPU free for
+    the behavior-recognition model already loaded by the GUI (avoids the two
+    models fighting over VRAM). Pass "cuda"/0 to force GPU.
+
+    Reads frames with decord, writes with imageio-ffmpeg.
+
+    This is a **generator**. It yields progress dicts while running and a
+    final ``done`` dict at the end:
+
+        {"type": "progress", "video": name, "vid_i": i, "vid_n": n,
+         "frame": f, "total": total}
+        {"type": "done", "output_dir": out_dir, "outputs": [paths...]}
     """
-    from ultralytics import YOLO  # imported lazily so the GUI loads without it
+    from ultralytics import YOLO       # imported lazily so the GUI loads without it
+    from decord import VideoReader, cpu
+    import imageio
 
     if not model_path or not os.path.isfile(model_path):
         raise FileNotFoundError(f"YOLO model not found: {model_path}")
@@ -112,54 +127,89 @@ def crop_folder(model_path, video_dir, crop_padding=0.3, output_dir=None, progre
     videos = list_videos(video_dir)
     outputs = []
 
-    for vi, vid_path in enumerate(videos):
-        vid_name = Path(vid_path).stem
-        cap = cv2.VideoCapture(vid_path)
-        if not cap.isOpened():
-            continue
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    try:
+        for vi, vid_path in enumerate(videos):
+            vid_name = Path(vid_path).stem
 
-        out_path = os.path.join(output_dir, f"{vid_name}_cropped_{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(out_path, fourcc, fps, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
+            # ---- read with decord (same as the rest of the GUI) ----
+            try:
+                vr = VideoReader(vid_path, ctx=cpu(0))
+            except Exception:
+                continue
+            total_frames = len(vr)
+            fps = float(vr.get_avg_fps()) or 30.0
 
-        smoother = SmoothBox()
-        frame_idx = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            results = model.track(
-                frame, conf=CONF_THRESHOLD, imgsz=IMG_SIZE,
-                persist=True, tracker="botsort.yaml", verbose=False,
+            out_path = os.path.join(output_dir, f"{vid_name}_cropped_{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}.mp4")
+
+            # ---- write with imageio-ffmpeg (stable on Colab) ----
+            writer = imageio.get_writer(
+                out_path, fps=fps, codec="libx264",
+                quality=8, macro_block_size=None,  # allow 224x224 without padding
             )
-            best_box, best_conf = None, -1
-            for r in results:
-                boxes = r.boxes
-                if boxes is not None and len(boxes) > 0:
-                    for i in range(len(boxes)):
-                        c = float(boxes.conf[i].cpu())
-                        if c > best_conf:
-                            best_conf = c
-                            best_box = boxes.xyxy[i].cpu().numpy().tolist()
 
-            smooth_box = smoother.update(best_box)
-            if smooth_box is not None:
-                out_frame = crop_and_upscale(frame, smooth_box, crop_padding,
-                                             OUTPUT_WIDTH, OUTPUT_HEIGHT)
-            else:
-                out_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT),
-                                       interpolation=cv2.INTER_LANCZOS4)
-            writer.write(out_frame)
-            frame_idx += 1
-            if progress and frame_idx % 50 == 0:
-                progress(vid_name, frame_idx, total_frames, vi + 1, len(videos))
+            smoother = SmoothBox()
+            frame_idx = 0
+            try:
+                for frame_idx in range(total_frames):
+                    frame = vr[frame_idx].asnumpy()  # decord returns RGB
 
-        cap.release()
-        writer.release()
-        outputs.append(out_path)
-        if progress:
-            progress(vid_name, frame_idx, total_frames, vi + 1, len(videos))
+                    # YOLO expects BGR-style ndarray input; it handles RGB ndarrays
+                    # fine, but tracking must run on the same colour space each call.
+                    results = model.track(
+                        frame, conf=CONF_THRESHOLD, imgsz=IMG_SIZE,
+                        persist=True, tracker="botsort.yaml",
+                        device=device, verbose=False,
+                    )
+                    best_box, best_conf = None, -1
+                    for r in results:
+                        boxes = r.boxes
+                        if boxes is not None and len(boxes) > 0:
+                            for i in range(len(boxes)):
+                                c = float(boxes.conf[i].cpu())
+                                if c > best_conf:
+                                    best_conf = c
+                                    best_box = boxes.xyxy[i].cpu().numpy().tolist()
 
-    return output_dir, outputs
+                    smooth_box = smoother.update(best_box)
+                    if smooth_box is not None:
+                        out_frame = crop_and_upscale(frame, smooth_box, crop_padding,
+                                                     OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                    else:
+                        out_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT),
+                                               interpolation=cv2.INTER_LANCZOS4)
+                    writer.append_data(out_frame)  # RGB in, RGB out
+
+                    if (frame_idx + 1) % 25 == 0:
+                        yield {"type": "progress", "video": vid_name,
+                               "vid_i": vi + 1, "vid_n": len(videos),
+                               "frame": frame_idx + 1, "total": total_frames}
+            finally:
+                writer.close()
+                del vr
+
+            outputs.append(out_path)
+
+            # ---- clear BoT-SORT tracker state so it doesn't carry into the
+            #      next video / accumulate; also drop cached frames ----
+            try:
+                model.predictor.trackers[0].reset()
+            except Exception:
+                # fall back: drop the predictor so a fresh tracker is built next call
+                model.predictor = None
+            gc.collect()
+
+            yield {"type": "progress", "video": vid_name,
+                   "vid_i": vi + 1, "vid_n": len(videos),
+                   "frame": total_frames, "total": total_frames}
+    finally:
+        # ---- release YOLO + free GPU so the behavior model gets its VRAM back ----
+        del model
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    yield {"type": "done", "output_dir": output_dir, "outputs": outputs}

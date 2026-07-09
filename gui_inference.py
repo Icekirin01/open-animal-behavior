@@ -290,22 +290,33 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
         yield "<p style='color:#e74c3c;'>❌ Load a valid video folder first</p>", *hold
         return
 
-    prog_state = {"msg": ""}
-    def _cb(name, fi, total, vi, vn):
-        prog_state["msg"] = (f"✂️ [{vi}/{vn}] {name} — frame {fi}/{total}")
-
     t0 = time.perf_counter()
-    yield "<p style='color:#D85A30;font-weight:600;'>✂️ Cropping… (this can take a while)</p>", *hold
-
     try:
         crop_padding = float(crop_padding)
     except Exception:
         crop_padding = 0.3
 
+    def _bar(frac):
+        frac = max(0.0, min(1.0, frac))
+        pct = int(frac * 100)
+        return (f"<div style='background:#eee;border-radius:6px;height:16px;overflow:hidden;'>"
+                f"<div style='width:{pct}%;height:100%;background:#D85A30;transition:width .2s;'></div>"
+                f"</div>")
+
+    out_dir, outputs = None, []
     try:
-        out_dir, outputs = precrop.crop_folder(
-            yolo_model_path, video_dir, crop_padding=crop_padding, progress=_cb
-        )
+        for ev in precrop.crop_folder(yolo_model_path, video_dir, crop_padding=crop_padding, device="cpu"):
+            if ev["type"] == "progress":
+                frac = (ev["frame"] / max(ev["total"], 1)) if ev["total"] else 0
+                # overall progress across videos
+                overall = ((ev["vid_i"] - 1) + frac) / max(ev["vid_n"], 1)
+                msg = (f"<p style='color:#D85A30;font-weight:600;margin-bottom:4px;'>"
+                       f"✂️ [{ev['vid_i']}/{ev['vid_n']}] {ev['video']} — "
+                       f"frame {ev['frame']}/{ev['total']} "
+                       f"({time.perf_counter()-t0:.0f}s)</p>{_bar(overall)}")
+                yield msg, *hold
+            elif ev["type"] == "done":
+                out_dir, outputs = ev["output_dir"], ev["outputs"]
     except Exception as e:
         yield f"<p style='color:#e74c3c;'>❌ Crop failed: {e}</p>", *hold
         return
@@ -316,7 +327,7 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
 
     elapsed = time.perf_counter() - t0
     status = (f"<p style='color:#2e7d32;font-weight:600;'>✅ Cropped {len(outputs)} video(s) "
-              f"in {elapsed:.1f}s → switched to <code>{out_dir}</code></p>")
+              f"in {elapsed:.1f}s → switched to <code>{out_dir}</code></p>{_bar(1.0)}")
 
     # Switch active folder to the cropped output and preview it.
     scan_out = scan_videos_and_preview(out_dir)
