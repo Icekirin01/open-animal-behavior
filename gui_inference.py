@@ -797,7 +797,11 @@ def _ethogram_png(vf, od):
         return None, f"❌ {vf}: no result"
     r = S["results"][vf]
     names = S["cfg"]["class_names"]
-    L = r["frame_labels"]
+    nc = len(names)
+    # Guard: clamp any label that falls outside class_names (e.g. after a
+    # disabled-class remap) so it can't raise IndexError mid-plot.
+    L = [l if isinstance(l, (int,)) and 0 <= l < nc else nc - 1
+         for l in r["frame_labels"]]
     T = len(L)
     if T == 0:
         return None, f"❌ {vf}: empty"
@@ -856,17 +860,39 @@ def _ethogram_png(vf, od):
 
 def do_ethogram_zip(od):
     """Make one ethogram PNG per inferred video, bundle into a zip for download.
-    Returns (zip_path_for_gr.File, log)."""
+    Returns (zip_path_for_gr.File, log). Never raises — errors go to the log so
+    the UI shows a real message instead of a bare Gradio error box."""
+    try:
+        return _do_ethogram_zip(od)
+    except ModuleNotFoundError as e:
+        return None, (f"❌ Missing package: {e.name}\n"
+                      f"   Install it, then restart the GUI:\n"
+                      f"   !pip install matplotlib")
+    except Exception as e:
+        import traceback
+        return None, f"❌ Ethogram failed: {type(e).__name__}: {e}\n\n{traceback.format_exc()}"
+
+
+def _do_ethogram_zip(od):
+    if not S.get("cfg"):
+        return None, "❌ Load a model first (need class names)"
+
     vids = [v for v in S["done"] if S["results"].get(v)]
     if not vids:
         return None, "❌ Run inference first"
+
+    if not od:
+        return None, "❌ Set the 'Save to' folder in the Data tab"
 
     eth_dir = os.path.join(od, "ethograms")
     os.makedirs(eth_dir, exist_ok=True)
 
     pngs, log = [], []
     for v in vids:
-        p, msg = _ethogram_png(v, eth_dir)
+        try:
+            p, msg = _ethogram_png(v, eth_dir)
+        except Exception as e:
+            p, msg = None, f"❌ {v}: {type(e).__name__}: {e}"
         log.append(msg)
         if p:
             pngs.append(p)
