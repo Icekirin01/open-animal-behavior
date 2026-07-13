@@ -5,7 +5,7 @@ Usage:
     python gui_inference.py
 """
 
-import os, json, time, shutil, zipfile
+import os, json, time, shutil, zipfile, tempfile
 import numpy as np
 import torch
 import gradio as gr
@@ -900,13 +900,25 @@ def _do_ethogram_zip(od):
     if not pngs:
         return None, "\n".join(log) or "❌ Nothing to plot"
 
-    zip_path = os.path.join(od, "ethograms.zip")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    # Build the zip in the system temp dir. gr.File refuses to serve files from
+    # arbitrary locations (e.g. Google Drive) — they must live in the CWD or a
+    # temp dir — so the download copy goes to /tmp and we ALSO drop a copy next
+    # to the PNGs on Drive for the user's own records.
+    tmp_zip = os.path.join(tempfile.gettempdir(), "ethograms.zip")
+    with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in pngs:
             zf.write(p, arcname=os.path.basename(p))
 
-    log.append(f"📦 {len(pngs)} ethogram(s) → {zip_path}")
-    return zip_path, "\n".join(log)
+    log.append(f"📦 {len(pngs)} ethogram(s) → {eth_dir}")
+
+    drive_zip = os.path.join(od, "ethograms.zip")
+    try:
+        shutil.copyfile(tmp_zip, drive_zip)
+        log.append(f"💾 Saved a copy to {drive_zip}")
+    except Exception as e:
+        log.append(f"⚠️ Could not copy zip to {od}: {e}")
+
+    return tmp_zip, "\n".join(log)
 
 
 # ====================== Cursor JS ======================
