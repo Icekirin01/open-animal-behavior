@@ -312,16 +312,21 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
     """Crop all videos in video_dir with the YOLO tracker, then switch the
     active folder to the cropped output and preview the first cropped clip.
 
-    Yields (crop_status, *scan_videos_and_preview outputs). While cropping,
-    the 7 preview outputs are left unchanged (gr.update()).
+    Yields (batch_prog, *7 preview outputs) — i.e. the SAME output list as
+    scan_videos_and_preview, so crop progress renders in the shared two-tier
+    progress card instead of a separate widget.
     """
     hold = (U,) * 7  # video_dd, scan_st, frame_img, info_html, scrubber, timeline, cursor
 
+    def _err(m):
+        return (f"<div style='background:#fff;border:1px solid #e0e0e0;border-radius:8px;"
+                f"padding:10px 14px;color:#e74c3c;font-weight:600;font-size:13px;'>{m}</div>")
+
     if not yolo_model_path:
-        yield "<p style='color:#e74c3c;'>❌ Enter the YOLO model path (.pt)</p>", *hold
+        yield _err("❌ Enter the YOLO model path (.pt)"), *hold
         return
     if not video_dir or not os.path.isdir(video_dir):
-        yield "<p style='color:#e74c3c;'>❌ Load a valid video folder first</p>", *hold
+        yield _err("❌ Load a valid video folder first"), *hold
         return
 
     t0 = time.perf_counter()
@@ -330,46 +335,40 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
     except Exception:
         crop_padding = 0.3
 
-    def _bar(frac):
-        frac = max(0.0, min(1.0, frac))
-        pct = int(frac * 100)
-        return (f"<div style='background:#eee;border-radius:6px;height:16px;overflow:hidden;'>"
-                f"<div style='width:{pct}%;height:100%;background:#D85A30;transition:width .2s;'></div>"
-                f"</div>")
-
     out_dir, outputs = None, []
     try:
-        for ev in precrop.crop_folder(yolo_model_path, video_dir, crop_padding=crop_padding, device=0):
+        for ev in precrop.crop_folder(yolo_model_path, video_dir,
+                                      crop_padding=crop_padding, device=0):
             if ev["type"] == "progress":
-                frac = (ev["frame"] / max(ev["total"], 1)) if ev["total"] else 0
-                # overall progress across videos
-                overall = ((ev["vid_i"] - 1) + frac) / max(ev["vid_n"], 1)
-                msg = (f"<p style='color:#D85A30;font-weight:600;margin-bottom:4px;'>"
-                       f"✂️ [{ev['vid_i']}/{ev['vid_n']}] {ev['video']} — "
-                       f"frame {ev['frame']}/{ev['total']} "
-                       f"({time.perf_counter()-t0:.0f}s)</p>{_bar(overall)}")
-                yield msg, *hold
+                # outer bar = videos, inner bar = frames of the current video
+                yield (html_progress(ev["vid_i"] - 1, ev["vid_n"], ev["video"],
+                                     ev["frame"], ev["total"],
+                                     elapsed=time.perf_counter() - t0,
+                                     title="Cropping", unit="frames",
+                                     show_rate=False, done_label="✅ Cropped"),
+                       *hold)
             elif ev["type"] == "done":
                 out_dir, outputs = ev["output_dir"], ev["outputs"]
     except Exception as e:
-        yield f"<p style='color:#e74c3c;'>❌ Crop failed: {e}</p>", *hold
+        yield _err(f"❌ Crop failed: {e}"), *hold
         return
 
     if not outputs:
-        yield "<p style='color:#e74c3c;'>❌ No videos were cropped</p>", *hold
+        yield _err("❌ No videos were cropped"), *hold
         return
 
-    elapsed = time.perf_counter() - t0
-    status = (f"<p style='color:#2e7d32;font-weight:600;'>✅ Cropped {len(outputs)} video(s) "
-              f"in {elapsed:.1f}s → switched to <code>{out_dir}</code></p>{_bar(1.0)}")
+    n = len(outputs)
+    yield (html_progress(n, n, f"{n} video(s) → {out_dir}", 1, 1,
+                         elapsed=time.perf_counter() - t0,
+                         title="Cropping", unit="frames",
+                         show_rate=False, done_label="✅ Cropped"),
+           *hold)
 
     # Switch active folder to the cropped output and preview it.
-    # scan_videos_and_preview is a generator now: take its final yield and drop
-    # the leading progress-card value (crop has its own status element).
-    scan_out = None
+    # scan_videos_and_preview is a generator with the SAME 8 outputs, so its
+    # yields (including its own Loading card) pass straight through.
     for scan_out in scan_videos_and_preview(out_dir):
-        pass
-    yield status, *scan_out[1:]
+        yield scan_out
 
 
 # ====================== HTML Builders ======================
@@ -899,7 +898,6 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
                 crop_pad_in = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, value=0.3,
                                         label="Crop padding")
                 run_crop_btn = gr.Button("✂️ Run crop", variant="primary")
-                crop_status = gr.HTML("")
 
         with gr.Column(scale=2, min_width=400):
             with gr.Group():
@@ -955,12 +953,13 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     demo_btn.click(load_demo_inference, [repo_in], load_outputs)
     load_folder_btn.click(scan_videos_and_preview, [vdir_in], load_outputs)
 
-    # Pre-crop: toggle panel + run crop then swap folder to cropped output
+    # Pre-crop: toggle panel + run crop then swap folder to cropped output.
+    # Uses load_outputs so crop progress lands in the shared progress card.
     precrop_toggle.change(lambda on: gr.update(visible=on), [precrop_toggle], [precrop_panel])
     run_crop_btn.click(
         run_precrop,
         [yolo_model_in, vdir_in, crop_pad_in],
-        [crop_status, video_dd, scan_st, frame_img, info_html, scrubber, timeline_html, cursor_state],
+        load_outputs,
     )
 
     # Video selection triggers preview (frame + scrubber setup)
