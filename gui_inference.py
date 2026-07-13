@@ -210,12 +210,12 @@ def load_demo_inference(repo):
     """Download all files from HF demo/, scan videos, preview first one.
     Does NOT modify the video folder path textbox."""
     if not repo:
-        return gr.update(choices=[], value=None), "❌ Specify repo", None, "<p style='color:#aaa;'>Select a video</p>", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+        return "", gr.update(choices=[], value=None), "❌ Specify repo", None, "<p style='color:#aaa;'>Select a video</p>", gr.update(maximum=0, value=0), "", S["_cursor_data"]
     try:
         all_files = list_repo_files(repo)
         demo_files = [f for f in all_files if f.startswith("demo/") and f != "demo/"]
         if not demo_files:
-            return gr.update(choices=[], value=None), "❌ No files in demo/ folder", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+            return "", gr.update(choices=[], value=None), "❌ No files in demo/ folder", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
         os.makedirs(DEMO_LOCAL_DIR, exist_ok=True)
         for f in demo_files:
             local = hf_hub_download(repo_id=repo, filename=f)
@@ -226,7 +226,7 @@ def load_demo_inference(repo):
         # Scan for videos
         videos = sorted([f for f in os.listdir(DEMO_LOCAL_DIR) if f.lower().endswith((".mp4", ".avi", ".mov"))])
         if not videos:
-            return gr.update(choices=[], value=None), "⚠️ No videos in demo/", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+            return "", gr.update(choices=[], value=None), "⚠️ No videos in demo/", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
         # Store active dir in state
         S["_active_vdir"] = DEMO_LOCAL_DIR
         # Preview first video
@@ -242,20 +242,49 @@ def load_demo_inference(repo):
             img = vr[0].asnumpy()
         except:
             T = 0; info = ""; img = None
-        return (gr.update(choices=videos, value=vf),
+        return ("", gr.update(choices=videos, value=vf),
                 f"✅ Demo loaded: {len(videos)} video(s)",
                 img, info, gr.update(maximum=max(T - 1, 0), value=0), "", S["_cursor_data"])
     except Exception as e:
-        return gr.update(choices=[], value=None), f"❌ {e}", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+        return "", gr.update(choices=[], value=None), f"❌ {e}", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
 
 def scan_videos_and_preview(vdir):
-    """Load folder: scan videos and preview the first one."""
+    """Load folder: scan videos and preview the first one.
+
+    Generator. Yields (batch_prog, video_dd, scan_st, frame_img, info_html,
+    scrubber, timeline, cursor) so Drive-loading progress shows up in the SAME
+    two-tier progress card that batch inference uses.
+    """
+    empty = (gr.update(choices=[], value=None), "❌ Not found", None, "",
+             gr.update(maximum=0, value=0), "", S["_cursor_data"])
     if not vdir or not os.path.isdir(vdir):
-        return gr.update(choices=[], value=None), "❌ Not found", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+        yield "", *empty
+        return
     v = sorted([f for f in os.listdir(vdir) if f.lower().endswith((".mp4", ".avi", ".mov"))])
     if not v:
-        return gr.update(choices=[], value=None), "❌ No videos", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
+        yield "", gr.update(choices=[], value=None), "❌ No videos", None, "", \
+              gr.update(maximum=0, value=0), "", S["_cursor_data"]
+        return
     S["_active_vdir"] = vdir
+
+    hold = (U,) * 7
+    total = len(v)
+    t0 = time.perf_counter()
+
+    # Open each video once so it's actually pulled/decoded from Drive, and
+    # report progress into the shared card.
+    for i, name in enumerate(v):
+        yield (html_progress(i, total, name, 0, 1,
+                             elapsed=time.perf_counter() - t0,
+                             title="Loading", unit="files", show_rate=False,
+                             done_label="✅ Loaded"),
+               *hold)
+        try:
+            _vr = VideoReader(os.path.join(vdir, name), ctx=cpu(0))
+            del _vr
+        except Exception:
+            pass
+
     # Preview first video
     vf = v[0]
     vp = os.path.join(vdir, vf)
@@ -269,8 +298,13 @@ def scan_videos_and_preview(vdir):
         img = vr[0].asnumpy()
     except:
         T = 0; info = ""; img = None
-    return (gr.update(choices=v, value=vf), f"✅ {len(v)} videos",
-            img, info, gr.update(maximum=max(T - 1, 0), value=0), "", S["_cursor_data"])
+
+    yield (html_progress(total, total, vf, 1, 1,
+                         elapsed=time.perf_counter() - t0,
+                         title="Loading", unit="files", show_rate=False,
+                         done_label="✅ Loaded"),
+           gr.update(choices=v, value=vf), f"✅ {len(v)} videos",
+           img, info, gr.update(maximum=max(T - 1, 0), value=0), "", S["_cursor_data"])
 
 # ====================== Pre-crop (YOLO) ======================
 
@@ -330,31 +364,41 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
               f"in {elapsed:.1f}s → switched to <code>{out_dir}</code></p>{_bar(1.0)}")
 
     # Switch active folder to the cropped output and preview it.
-    scan_out = scan_videos_and_preview(out_dir)
-    yield status, *scan_out
+    # scan_videos_and_preview is a generator now: take its final yield and drop
+    # the leading progress-card value (crop has its own status element).
+    scan_out = None
+    for scan_out in scan_videos_and_preview(out_dir):
+        pass
+    yield status, *scan_out[1:]
 
 
 # ====================== HTML Builders ======================
 
-def html_progress(vd, vt, cur_name, wd, wt, ws=None, elapsed=None, stride=4):
+def html_progress(vd, vt, cur_name, wd, wt, ws=None, elapsed=None, stride=4,
+                  title="Batch", unit="windows", show_rate=True, done_label=None):
+    """Two-tier progress card (outer = videos, inner = current item).
+
+    Reused by batch inference, Drive loading and preprocessing — pass a
+    different ``title``/``unit`` instead of building a separate widget.
+    """
     if vt == 0: return ""
     vp = (vd / vt) * 100; wp = (wd / max(wt, 1)) * 100
     vc = "#1D9E75" if vd == vt else "#D85A30"
-    st = "✅ Complete" if vd == vt else "Processing..."
+    st = (done_label or "✅ Complete") if vd == vt else "Processing..."
     rate_str = ""
-    if elapsed and elapsed > 0.1 and wd > 0:
+    if show_rate and elapsed and elapsed > 0.1 and wd > 0:
         wps = wd / elapsed
         fps = wd * stride / elapsed
-        rate_str = f" · {wps:.1f} win/s · {fps:.1f} fps"
+        rate_str = f" · {wps:.1f} {unit[:3]}/s · {fps:.1f} fps"
     return f"""<div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:10px 14px;">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-        <span style="font-size:13px;font-weight:600;">Batch — {st}</span>
+        <span style="font-size:13px;font-weight:600;">{title} — {st}</span>
         <span style="font-size:12px;color:#888;">{vd}/{vt} videos</span></div>
       <div style="height:8px;background:#eee;border-radius:4px;overflow:hidden;margin-bottom:10px;">
         <div style="width:{vp:.1f}%;height:100%;background:{vc};border-radius:4px;"></div></div>
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
         <span style="font-size:12px;font-weight:500;">Current: {cur_name}</span>
-        <span style="font-size:12px;color:#888;">{wd}/{wt} windows{rate_str}</span></div>
+        <span style="font-size:12px;color:#888;">{wd}/{wt} {unit}{rate_str}</span></div>
       <div style="height:6px;background:#eee;border-radius:3px;overflow:hidden;">
         <div style="width:{wp:.1f}%;height:100%;background:#1D9E75;border-radius:3px;"></div></div>
     </div>"""
@@ -582,6 +626,12 @@ def run_single(vf, num_workers, cache_local):
             print(f"⛔ Inference cancelled: {vf}")
             return
         if isinstance(msg, dict): result = msg
+        elif isinstance(msg, tuple) and len(msg) == 3 and msg[0] == "prep":
+            _, pd_, pt_ = msg
+            yield html_progress(0, 1, vf, pd_, pt_,
+                                elapsed=time.perf_counter()-t0,
+                                title="Preprocessing", unit="steps",
+                                show_rate=False), U, U, U, U, U, U, U, U
         else:
             wd, wt = msg
             yield html_progress(0, 1, vf, wd, wt, ws=ws, elapsed=time.perf_counter()-t0), U, U, U, U, U, U, U, U
@@ -619,7 +669,10 @@ def run_batch(num_workers, cache_local):
             try: mb = os.path.getsize(cached) / (1024*1024)
             except: pass
             elapsed = time.perf_counter() - cache_t0
-            yield (f"<p style='font-size:13px;color:#888;'>📦 Caching {ci+1}/{total}: {vf} ({mb:.0f} MB) · {elapsed:.0f}s</p>",
+            yield (html_progress(ci, total, f"{vf} ({mb:.0f} MB)", ci, total,
+                                 elapsed=elapsed, title="Loading from Drive",
+                                 unit="files", show_rate=False,
+                                 done_label="✅ Loaded"),
                    U, U, U, U, U, U, U, U, U)
         blog.append(f"📦 Cached {len(cache_map)} video(s) to local disk")
 
@@ -639,6 +692,12 @@ def run_batch(num_workers, cache_local):
                 print(f"⛔ Batch inference cancelled during {vf}")
                 return
             if isinstance(msg, dict): result = msg
+            elif isinstance(msg, tuple) and len(msg) == 3 and msg[0] == "prep":
+                _, pd_, pt_ = msg
+                yield html_progress(vi, total, vf, pd_, pt_,
+                                    elapsed=time.perf_counter()-t0,
+                                    title="Preprocessing", unit="steps",
+                                    show_rate=False), U, U, U, U, U, U, U, U, U
             else:
                 wd, wt = msg
                 yield html_progress(vi, total, vf, wd, wt, ws=ws, elapsed=time.perf_counter()-t0), U, U, U, U, U, U, U, U, U
@@ -890,8 +949,9 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     local_load_btn.click(load_model_local, [local_dir_in, local_model_dd], [model_st_local, behavior_toggles, toggle_label_html, infer_info_html])
     behavior_toggles.change(on_toggle_change, [behavior_toggles], [toggle_status])
 
-    # Shared outputs for demo/load folder: video dropdown, status, preview frame, info, scrubber, timeline, cursor
-    load_outputs = [video_dd, scan_st, frame_img, info_html, scrubber, timeline_html, cursor_state]
+    # Shared outputs for demo/load folder. batch_prog is FIRST so Drive-loading
+    # progress renders in the same two-tier card that batch inference uses.
+    load_outputs = [batch_prog, video_dd, scan_st, frame_img, info_html, scrubber, timeline_html, cursor_state]
     demo_btn.click(load_demo_inference, [repo_in], load_outputs)
     load_folder_btn.click(scan_videos_and_preview, [vdir_in], load_outputs)
 

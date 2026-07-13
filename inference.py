@@ -121,17 +121,24 @@ def infer_video_gen(vdir, vf, model, cfg, disabled_classes=None, yield_every=5):
 
     import os
     vp = os.path.join(vdir, vf)
-    vr = VideoReader(vp, ctx=cpu(0))
+    # Signal the preprocessing/loading phase so the GUI can show it in the
+    # shared progress card. 3-tuples ("prep", done, total) are distinguishable
+    # from the 2-tuple ("windows") progress emitted below.
+    yield ("prep", 0, 3)
+    vr = VideoReader(vp, ctx=cpu(0))   # pulls/decodes the file (slow on Drive)
+    yield ("prep", 1, 3)
     T = len(vr)
     fps = vr.get_avg_fps()
 
     votes = [[] for _ in range(T)]
     probs = [[] for _ in range(T)]
     wins = list(range(0, T - ws + 1, st))
+    yield ("prep", 2, 3)
 
     if not wins:
         # Video shorter than one window — use all frames
         fr = [Image.fromarray(f) for f in vr.get_batch(list(range(T))).asnumpy()]
+        yield ("prep", 3, 3)
         while len(fr) < ws:
             fr.append(fr[-1])
         with torch.no_grad():
@@ -144,6 +151,7 @@ def infer_video_gen(vdir, vf, model, cfg, disabled_classes=None, yield_every=5):
             probs[i].append(p)
         yield (1, 1)
     else:
+        yield ("prep", 3, 3)
         for wi, s in enumerate(wins):
             idx = list(range(s, s + ws))
             fr = [Image.fromarray(f) for f in vr.get_batch(idx).asnumpy()]
