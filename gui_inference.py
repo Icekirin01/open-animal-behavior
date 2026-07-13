@@ -5,7 +5,7 @@ Usage:
     python gui_inference.py
 """
 
-import os, json, time, shutil
+import os, json, time, shutil, zipfile
 import numpy as np
 import torch
 import gradio as gr
@@ -312,21 +312,23 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
     """Crop all videos in video_dir with the YOLO tracker, then switch the
     active folder to the cropped output and preview the first cropped clip.
 
-    Yields (batch_prog, *7 preview outputs) — i.e. the SAME output list as
-    scan_videos_and_preview, so crop progress renders in the shared two-tier
-    progress card instead of a separate widget.
+    Yields (run_crop_btn, batch_prog, *7 preview outputs). The button is
+    disabled ("Cropping...") for the whole run so it can't be double-clicked,
+    and re-enabled on every exit path.
     """
     hold = (U,) * 7  # video_dd, scan_st, frame_img, info_html, scrubber, timeline, cursor
+    BUSY = gr.update(value="⏳ Cropping...", interactive=False)
+    IDLE = gr.update(value="✂️ Run crop", interactive=True)
 
     def _err(m):
         return (f"<div style='background:#fff;border:1px solid #e0e0e0;border-radius:8px;"
                 f"padding:10px 14px;color:#e74c3c;font-weight:600;font-size:13px;'>{m}</div>")
 
     if not yolo_model_path:
-        yield _err("❌ Enter the YOLO model path (.pt)"), *hold
+        yield IDLE, _err("❌ Enter the YOLO model path (.pt)"), *hold
         return
     if not video_dir or not os.path.isdir(video_dir):
-        yield _err("❌ Load a valid video folder first"), *hold
+        yield IDLE, _err("❌ Load a valid video folder first"), *hold
         return
 
     t0 = time.perf_counter()
@@ -341,7 +343,8 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
                                       crop_padding=crop_padding, device=0):
             if ev["type"] == "progress":
                 # outer bar = videos, inner bar = frames of the current video
-                yield (html_progress(ev["vid_i"] - 1, ev["vid_n"], ev["video"],
+                yield (BUSY,
+                       html_progress(ev["vid_i"] - 1, ev["vid_n"], ev["video"],
                                      ev["frame"], ev["total"],
                                      elapsed=time.perf_counter() - t0,
                                      title="Cropping", unit="frames",
@@ -350,25 +353,34 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
             elif ev["type"] == "done":
                 out_dir, outputs = ev["output_dir"], ev["outputs"]
     except Exception as e:
-        yield _err(f"❌ Crop failed: {e}"), *hold
+        yield IDLE, _err(f"❌ Crop failed: {e}"), *hold
         return
 
     if not outputs:
-        yield _err("❌ No videos were cropped"), *hold
+        yield IDLE, _err("❌ No videos were cropped"), *hold
         return
 
     n = len(outputs)
-    yield (html_progress(n, n, f"{n} video(s) → {out_dir}", 1, 1,
+    yield (BUSY,
+           html_progress(n, n, f"{n} video(s) → {out_dir}", 1, 1,
                          elapsed=time.perf_counter() - t0,
                          title="Cropping", unit="frames",
                          show_rate=False, done_label="✅ Cropped"),
            *hold)
 
-    # Switch active folder to the cropped output and preview it.
-    # scan_videos_and_preview is a generator with the SAME 8 outputs, so its
-    # yields (including its own Loading card) pass straight through.
+    # Switch active folder to the cropped output and preview it. Keep the
+    # button disabled through the reload, then re-enable on the last yield.
+    # Use a one-step lookahead so the Loading card still streams live (draining
+    # the generator into a list first would freeze it until the reload ended).
+    prev = None
     for scan_out in scan_videos_and_preview(out_dir):
-        yield scan_out
+        if prev is not None:
+            yield BUSY, *prev
+        prev = scan_out
+    if prev is not None:
+        yield IDLE, *prev
+    else:
+        yield IDLE, "", *hold
 
 
 # ====================== HTML Builders ======================
@@ -770,6 +782,107 @@ def do_export_all(od, fmt):
     if not S["done"]: return "❌"
     return "\n".join(_exp_onehot(v, od) if fmt == "One-hot CSV (per-frame)" else _exp_boris(v, od) for v in S["done"])
 
+# ====================== Ethogram ======================
+
+def _ethogram_png(vf, od):
+    """Render one ethogram PNG for a video: behavior on Y, frames on X,
+    coloured bars where each behavior is active. Uses the same palette as the
+    inline timeline so colours match across the app."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    if vf not in S["results"] or not S["results"][vf]:
+        return None, f"❌ {vf}: no result"
+    r = S["results"][vf]
+    names = S["cfg"]["class_names"]
+    L = r["frame_labels"]
+    T = len(L)
+    if T == 0:
+        return None, f"❌ {vf}: empty"
+
+    os.makedirs(od, exist_ok=True)
+
+    # Contiguous runs -> bars (far fewer artists than one per frame)
+    runs = []
+    cur, st = L[0], 0
+    for i in range(1, T):
+        if L[i] != cur:
+            runs.append((cur, st, i - st)); cur, st = L[i], i
+    runs.append((cur, st, T - st))
+
+    nc = len(names)
+    fig, ax = plt.subplots(figsize=(10, max(2.0, 0.42 * nc + 1.0)), dpi=150)
+    ax.set_facecolor("#ebebeb")
+
+    for cls, start, width in runs:
+        ax.broken_barh([(start, width)], (nc - 1 - cls - 0.36, 0.72),
+                       facecolors=CLR_PALETTE[cls % len(CLR_PALETTE)],
+                       edgecolors="white", linewidth=0.4)
+
+    ax.set_yticks(range(nc))
+    ax.set_yticklabels(list(reversed(names)), fontsize=9)
+    ax.set_ylim(-0.6, nc - 0.4)
+    ax.set_xlim(0, T)
+    ax.set_xlabel("Frame", fontsize=9)
+    ax.set_ylabel("Predictions", fontsize=10, fontweight="bold")
+    ax.set_title(vf, fontsize=10, fontweight="bold")
+    ax.tick_params(axis="x", labelsize=8)
+    ax.grid(axis="x", color="white", linewidth=0.8, alpha=0.9)
+    ax.set_axisbelow(True)
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+
+    # Secondary axis in seconds
+    fps = r.get("fps") or 0
+    if fps:
+        sec = ax.secondary_xaxis("top", functions=(lambda x: x / fps, lambda t: t * fps))
+        sec.set_xlabel("Time (s)", fontsize=9)
+        sec.tick_params(labelsize=8)
+
+    present = sorted({c for c, _, _ in runs})
+    ax.legend(handles=[Patch(facecolor=CLR_PALETTE[c % len(CLR_PALETTE)], label=names[c])
+                       for c in present],
+              loc="upper center", bbox_to_anchor=(0.5, -0.28),
+              ncol=min(len(present), 4), fontsize=8, frameon=False)
+
+    fig.tight_layout()
+    p = os.path.join(od, vf.rsplit(".", 1)[0] + "_ethogram.png")
+    fig.savefig(p, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return p, f"✅ {p}"
+
+
+def do_ethogram_zip(od):
+    """Make one ethogram PNG per inferred video, bundle into a zip for download.
+    Returns (zip_path_for_gr.File, log)."""
+    vids = [v for v in S["done"] if S["results"].get(v)]
+    if not vids:
+        return None, "❌ Run inference first"
+
+    eth_dir = os.path.join(od, "ethograms")
+    os.makedirs(eth_dir, exist_ok=True)
+
+    pngs, log = [], []
+    for v in vids:
+        p, msg = _ethogram_png(v, eth_dir)
+        log.append(msg)
+        if p:
+            pngs.append(p)
+
+    if not pngs:
+        return None, "\n".join(log) or "❌ Nothing to plot"
+
+    zip_path = os.path.join(od, "ethograms.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in pngs:
+            zf.write(p, arcname=os.path.basename(p))
+
+    log.append(f"📦 {len(pngs)} ethogram(s) → {zip_path}")
+    return zip_path, "\n".join(log)
+
+
 # ====================== Cursor JS ======================
 
 CURSOR_JS = """
@@ -933,13 +1046,23 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
             cancel_btn = gr.Button("⛔ Cancel inference", variant="stop")
             gr.Markdown("---")
             gr.Markdown("### ④ Export")
-            with gr.Group():
-                exp_fmt = gr.Dropdown(label="Output format", choices=["One-hot CSV (per-frame)", "BORIS event log"], value="One-hot CSV (per-frame)", interactive=True)
-                exp_prev = gr.HTML("<p style='color:#aaa;font-size:13px;'>Run inference first</p>")
-                out_dir = gr.Textbox(label="Save to", value=DEFAULT_OUTPUT_DIR)
-            exp_cur = gr.Button("💾 Export current video", variant="primary")
-            exp_all = gr.Button("📦 Export all (batch)")
-            exp_log = gr.Textbox(label="Export log", interactive=False, lines=6)
+            with gr.Tabs():
+                with gr.Tab("Data"):
+                    with gr.Group():
+                        exp_fmt = gr.Dropdown(label="Output format", choices=["One-hot CSV (per-frame)", "BORIS event log"], value="One-hot CSV (per-frame)", interactive=True)
+                        exp_prev = gr.HTML("<p style='color:#aaa;font-size:13px;'>Run inference first</p>")
+                        out_dir = gr.Textbox(label="Save to", value=DEFAULT_OUTPUT_DIR)
+                    exp_cur = gr.Button("💾 Export current video", variant="primary")
+                    exp_all = gr.Button("📦 Export all (batch)")
+                    exp_log = gr.Textbox(label="Export log", interactive=False, lines=6)
+
+                with gr.Tab("Ethogram"):
+                    gr.Markdown(
+                        "<p style='font-size:13px;color:#555;'>One ethogram PNG per inferred "
+                        "video, bundled into a zip.</p>")
+                    eth_btn = gr.Button("🎨 Generate ethograms + download zip", variant="primary")
+                    eth_file = gr.File(label="ethograms.zip", interactive=False)
+                    eth_log = gr.Textbox(label="Ethogram log", interactive=False, lines=6)
 
     demo.load(list_models, [repo_in], [hf_model_dd, model_st])
     hf_load_btn.click(load_model_hf, [repo_in, hf_model_dd], [model_st, behavior_toggles, toggle_label_html, infer_info_html])
@@ -959,7 +1082,7 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     run_crop_btn.click(
         run_precrop,
         [yolo_model_in, vdir_in, crop_pad_in],
-        load_outputs,
+        [run_crop_btn] + load_outputs,
     )
 
     # Video selection triggers preview (frame + scrubber setup)
@@ -978,6 +1101,7 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     exp_fmt.change(update_export_preview, [exp_fmt], [exp_prev])
     exp_cur.click(do_export_cur, [video_dd, out_dir, exp_fmt], [exp_log])
     exp_all.click(do_export_all, [out_dir, exp_fmt], [exp_log])
+    eth_btn.click(do_ethogram_zip, [out_dir], [eth_file, eth_log])
 
 if __name__ == "__main__":
     demo.launch(debug=True, share=True)
