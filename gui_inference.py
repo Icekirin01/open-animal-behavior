@@ -853,7 +853,7 @@ def _ethogram_png(vf, od):
     runs.append((cur, st, T - st))
 
     nc = len(names)
-    fig, ax = plt.subplots(figsize=(10, max(2.0, 0.42 * n_show + 1.0)), dpi=150)
+    fig, ax = plt.subplots(figsize=(12, max(2.2, 0.5 * n_show + 1.4)), dpi=150)
     ax.set_facecolor("#ebebeb")
 
     for cls, start, width in runs:
@@ -887,10 +887,10 @@ def _ethogram_png(vf, od):
     present = [c for c in sorted({c for c, _, _ in runs}) if c in row_of]
     ax.legend(handles=[Patch(facecolor=CLR_PALETTE[c % len(CLR_PALETTE)], label=names[c])
                        for c in present],
-              loc="upper center", bbox_to_anchor=(0.5, -0.28),
+              loc="upper center", bbox_to_anchor=(0.5, -0.55),
               ncol=min(max(len(present), 1), 4), fontsize=8, frameon=False)
 
-    fig.tight_layout()
+    fig.subplots_adjust(bottom=0.34, top=0.80, left=0.14, right=0.97)
     p = os.path.join(od, vf.rsplit(".", 1)[0] + "_ethogram.png")
     fig.savefig(p, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -1140,7 +1140,8 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
                         "'Other' is not plotted.</p>")
                     eth_gallery = gr.Gallery(label="Ethograms", columns=1,
                                              height="auto", show_label=False,
-                                             preview=False)
+                                             preview=False, object_fit="contain",
+                                             allow_preview=True)
                     gr.Markdown("<p style='font-size:12px;color:#888;'>Download every "
                                 "ethogram (not just the first 10) as a zip:</p>")
                     eth_btn = gr.Button("📦 Download all as zip", variant="primary")
