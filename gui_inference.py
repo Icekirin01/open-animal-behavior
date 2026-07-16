@@ -783,30 +783,33 @@ def do_export_all(od, fmt):
     return "\n".join(_exp_onehot(v, od) if fmt == "One-hot CSV (per-frame)" else _exp_boris(v, od) for v in S["done"])
 
 def render_ethograms_gallery(limit=10):
-    """Render up to `limit` ethogram PNGs to /tmp for inline display in the
-    Ethogram tab. No zip. Returns a list of PNG paths (or [] if none)."""
+    """Render up to `limit` ethogram PNGs and return one gr.update per image
+    slot: visible with the PNG for produced plots, hidden for the rest. Using
+    individual Image components (instead of a Gallery) makes each frame hug its
+    own plot rather than sitting in a big fixed container."""
+    updates = [gr.update(value=None, visible=False) for _ in range(limit)]
     try:
         if not S.get("cfg"):
-            return []
+            return updates
         vids = [v for v in S["done"] if S["results"].get(v)][:limit]
         if not vids:
-            return []
+            return updates
         gdir = os.path.join(tempfile.gettempdir(), "ethogram_gallery")
-        # clear stale images so an old run's plots don't linger
         if os.path.isdir(gdir):
             shutil.rmtree(gdir, ignore_errors=True)
         os.makedirs(gdir, exist_ok=True)
-        out = []
+        slot = 0
         for v in vids:
             try:
                 p, _ = _ethogram_png(v, gdir)
-                if p:
-                    out.append(p)
             except Exception:
-                pass
-        return out
+                p = None
+            if p:
+                updates[slot] = gr.update(value=p, visible=True)
+                slot += 1
+        return updates
     except Exception:
-        return []
+        return updates
 
 
 # ====================== Ethogram ======================
@@ -1138,10 +1141,10 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
                         "<p style='font-size:13px;color:#555;'>Ethograms appear here "
                         "automatically after inference (first 10 videos shown). "
                         "'Other' is not plotted.</p>")
-                    eth_gallery = gr.Gallery(label="Ethograms", columns=1,
-                                             height="auto", show_label=False,
-                                             preview=False, object_fit="contain",
-                                             allow_preview=True)
+                    _MAX_ETH = 10
+                    eth_imgs = [gr.Image(visible=False, show_label=False,
+                                         container=False)
+                                for _ in range(_MAX_ETH)]
                     gr.Markdown("<p style='font-size:12px;color:#888;'>Download every "
                                 "ethogram (not just the first 10) as a zip:</p>")
                     eth_btn = gr.Button("📦 Download all as zip", variant="primary")
@@ -1176,9 +1179,9 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     out10 = out9 + [batch_log_tb]
 
     run_btn.click(run_single, [video_dd, nw_in, cache_local_cb], out9) \
-           .then(render_ethograms_gallery, None, [eth_gallery])
+           .then(render_ethograms_gallery, None, eth_imgs)
     batch_btn.click(run_batch, [nw_in, cache_local_cb], out10) \
-             .then(render_ethograms_gallery, None, [eth_gallery])
+             .then(render_ethograms_gallery, None, eth_imgs)
     cancel_btn.click(cancel_inference, [], [batch_prog])
     scrubber.input(fn=None, inputs=[scrubber, cursor_state], outputs=[scrubber], js=CURSOR_JS)
     scrubber.change(on_scrub, inputs=[scrubber], outputs=[frame_img, info_html])
