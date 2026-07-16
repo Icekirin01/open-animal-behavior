@@ -782,6 +782,33 @@ def do_export_all(od, fmt):
     if not S["done"]: return "❌"
     return "\n".join(_exp_onehot(v, od) if fmt == "One-hot CSV (per-frame)" else _exp_boris(v, od) for v in S["done"])
 
+def render_ethograms_gallery(limit=10):
+    """Render up to `limit` ethogram PNGs to /tmp for inline display in the
+    Ethogram tab. No zip. Returns a list of PNG paths (or [] if none)."""
+    try:
+        if not S.get("cfg"):
+            return []
+        vids = [v for v in S["done"] if S["results"].get(v)][:limit]
+        if not vids:
+            return []
+        gdir = os.path.join(tempfile.gettempdir(), "ethogram_gallery")
+        # clear stale images so an old run's plots don't linger
+        if os.path.isdir(gdir):
+            shutil.rmtree(gdir, ignore_errors=True)
+        os.makedirs(gdir, exist_ok=True)
+        out = []
+        for v in vids:
+            try:
+                p, _ = _ethogram_png(v, gdir)
+                if p:
+                    out.append(p)
+            except Exception:
+                pass
+        return out
+    except Exception:
+        return []
+
+
 # ====================== Ethogram ======================
 
 def _ethogram_png(vf, od):
@@ -806,6 +833,15 @@ def _ethogram_png(vf, od):
     if T == 0:
         return None, f"❌ {vf}: empty"
 
+    # Drop the 'other/others' class: it gets no row and no bars. Build the list
+    # of behaviors to show (in original order) and a map to plot-row positions.
+    def _is_other(n): return n.lower() in ("others", "other")
+    show = [i for i, n in enumerate(names) if not _is_other(n)]
+    if not show:
+        return None, f"❌ {vf}: only 'other' class present"
+    row_of = {cls: k for k, cls in enumerate(show)}  # class idx -> row (0=bottom)
+    n_show = len(show)
+
     os.makedirs(od, exist_ok=True)
 
     # Contiguous runs -> bars (far fewer artists than one per frame)
@@ -817,17 +853,20 @@ def _ethogram_png(vf, od):
     runs.append((cur, st, T - st))
 
     nc = len(names)
-    fig, ax = plt.subplots(figsize=(10, max(2.0, 0.42 * nc + 1.0)), dpi=150)
+    fig, ax = plt.subplots(figsize=(10, max(2.0, 0.42 * n_show + 1.0)), dpi=150)
     ax.set_facecolor("#ebebeb")
 
     for cls, start, width in runs:
-        ax.broken_barh([(start, width)], (nc - 1 - cls - 0.36, 0.72),
+        if cls not in row_of:      # skip 'other' bars entirely
+            continue
+        row = row_of[cls]
+        ax.broken_barh([(start, width)], (n_show - 1 - row - 0.36, 0.72),
                        facecolors=CLR_PALETTE[cls % len(CLR_PALETTE)],
                        edgecolors="white", linewidth=0.4)
 
-    ax.set_yticks(range(nc))
-    ax.set_yticklabels(list(reversed(names)), fontsize=9)
-    ax.set_ylim(-0.6, nc - 0.4)
+    ax.set_yticks(range(n_show))
+    ax.set_yticklabels([names[c] for c in reversed(show)], fontsize=9)
+    ax.set_ylim(-0.6, n_show - 0.4)
     ax.set_xlim(0, T)
     ax.set_xlabel("Frame", fontsize=9)
     ax.set_ylabel("Predictions", fontsize=10, fontweight="bold")
@@ -845,11 +884,11 @@ def _ethogram_png(vf, od):
         sec.set_xlabel("Time (s)", fontsize=9)
         sec.tick_params(labelsize=8)
 
-    present = sorted({c for c, _, _ in runs})
+    present = [c for c in sorted({c for c, _, _ in runs}) if c in row_of]
     ax.legend(handles=[Patch(facecolor=CLR_PALETTE[c % len(CLR_PALETTE)], label=names[c])
                        for c in present],
               loc="upper center", bbox_to_anchor=(0.5, -0.28),
-              ncol=min(len(present), 4), fontsize=8, frameon=False)
+              ncol=min(max(len(present), 1), 4), fontsize=8, frameon=False)
 
     fig.tight_layout()
     p = os.path.join(od, vf.rsplit(".", 1)[0] + "_ethogram.png")
@@ -1096,11 +1135,17 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
 
                 with gr.Tab("Ethogram"):
                     gr.Markdown(
-                        "<p style='font-size:13px;color:#555;'>One ethogram PNG per inferred "
-                        "video, bundled into a zip.</p>")
-                    eth_btn = gr.Button("🎨 Generate ethograms + download zip", variant="primary")
+                        "<p style='font-size:13px;color:#555;'>Ethograms appear here "
+                        "automatically after inference (first 10 videos shown). "
+                        "'Other' is not plotted.</p>")
+                    eth_gallery = gr.Gallery(label="Ethograms", columns=1,
+                                             height="auto", show_label=False,
+                                             preview=False)
+                    gr.Markdown("<p style='font-size:12px;color:#888;'>Download every "
+                                "ethogram (not just the first 10) as a zip:</p>")
+                    eth_btn = gr.Button("📦 Download all as zip", variant="primary")
                     eth_file = gr.File(label="ethograms.zip", interactive=False)
-                    eth_log = gr.Textbox(label="Ethogram log", interactive=False, lines=6)
+                    eth_log = gr.Textbox(label="Ethogram log", interactive=False, lines=4)
 
     demo.load(list_models, [repo_in], [hf_model_dd, model_st])
     hf_load_btn.click(load_model_hf, [repo_in, hf_model_dd], [model_st, behavior_toggles, toggle_label_html, infer_info_html])
@@ -1129,8 +1174,10 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     out9 = [batch_prog, info_html, frame_img, timeline_html, behavior_html, exp_prev, nav_md_out, scrubber, cursor_state]
     out10 = out9 + [batch_log_tb]
 
-    run_btn.click(run_single, [video_dd, nw_in, cache_local_cb], out9)
-    batch_btn.click(run_batch, [nw_in, cache_local_cb], out10)
+    run_btn.click(run_single, [video_dd, nw_in, cache_local_cb], out9) \
+           .then(render_ethograms_gallery, None, [eth_gallery])
+    batch_btn.click(run_batch, [nw_in, cache_local_cb], out10) \
+             .then(render_ethograms_gallery, None, [eth_gallery])
     cancel_btn.click(cancel_inference, [], [batch_prog])
     scrubber.input(fn=None, inputs=[scrubber, cursor_state], outputs=[scrubber], js=CURSOR_JS)
     scrubber.change(on_scrub, inputs=[scrubber], outputs=[frame_img, info_html])
