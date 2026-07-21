@@ -1147,6 +1147,160 @@ def build_val_html(log,names):
     best=max(range(len(log)),key=lambda i:log[i]["f1"])
     return "".join(html_val_card(e["epoch"],e["loss"],e["f1"],e["mAP"],e["f1_per"],e["ap_per"],names,e.get("prec_per"),e.get("rec_per"),i==best) for i,e in enumerate(log))
 
+def scan_val_folder(val_vdir, val_ldir):
+    """Scan a separate validation folder into the same entry format as
+    S["scan_data"] (dicts with vf/vp/lp). Returns (entries, message).
+
+    Uses the same flexible video↔CSV matching as the main scan so a val folder
+    laid out like the training folder just works."""
+    if not val_vdir or not os.path.isdir(val_vdir):
+        return [], f"❌ Val video dir not found: {val_vdir}"
+    if not val_ldir or not os.path.isdir(val_ldir):
+        return [], f"❌ Val label dir not found: {val_ldir}"
+
+    vfiles = sorted([f for f in os.listdir(val_vdir)
+                     if f.lower().endswith((".mp4", ".avi", ".mov"))])
+    if not vfiles:
+        return [], "❌ No videos in val folder"
+
+    csv_files = {os.path.splitext(f)[0].lower(): os.path.join(val_ldir, f)
+                 for f in os.listdir(val_ldir) if f.lower().endswith(".csv")}
+
+    entries = []
+    for vf in vfiles:
+        base = os.path.splitext(vf)[0]; lp = None
+        for cand in [base, base.replace("-", ""), base.replace("_", ""),
+                     base.replace("-", "_"), base.replace("_", "-")]:
+            fp = os.path.join(val_ldir, cand + ".csv")
+            if os.path.exists(fp): lp = fp; break
+            fp = os.path.join(val_ldir, cand + "_one_hot.csv")
+            if os.path.exists(fp): lp = fp; break
+            if cand.lower() in csv_files:
+                lp = csv_files[cand.lower()]; break
+        if lp is None:
+            continue
+        vp = os.path.join(val_vdir, vf)
+        try:
+            vr = VideoReader(vp, ctx=cpu(0)); T = len(vr); fps = vr.get_avg_fps()
+            del vr
+        except Exception:
+            continue
+        entries.append({"vf": vf, "vp": vp, "lp": lp, "T": T, "fps": fps})
+
+    if not entries:
+        return [], "❌ No video/label pairs matched in val folder"
+    return entries, f"✅ {len(entries)} val videos"
+
+
+def build_threshold_table(epoch, n_steps=10):
+    """Plot precision & recall vs threshold for one epoch (one subplot/class).
+
+    For each class c and threshold t a window counts as a positive prediction
+    when softmax prob for c >= t (one-vs-rest), so precision and recall move
+    independently of argmax — that is the point of sweeping the threshold.
+
+    Returns a PNG path for gr.Image (or None when there is nothing to plot).
+    """
+    import tempfile
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    vp = S.get("val_probs") or {}
+    if not vp:
+        return None
+    try:
+        epoch = int(epoch)
+    except Exception:
+        return None
+    if epoch not in vp:
+        return None
+
+    d = vp[epoch]
+    y = np.asarray(d["y_true"]); P = np.asarray(d["probs"]); names = d["names"]
+    try:
+        n_steps = max(2, int(n_steps))
+    except Exception:
+        n_steps = 10
+    ths = np.linspace(0.0, 1.0, n_steps + 1)[1:-1]   # 排除 0 和 1（無意義）
+    if len(ths) == 0:
+        ths = np.array([0.5])
+
+    # Other/Others 不畫（它代表「沒有目標行為」，threshold 分析沒有意義）
+    show = [i for i, n in enumerate(names)
+            if n.lower() not in ("others", "other")]
+    if not show:
+        return None
+    nc = len(show)
+    ncol = min(3, nc)
+    nrow = int(np.ceil(nc / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(4.6 * ncol, 3.4 * nrow),
+                             dpi=130, squeeze=False)
+
+    C_PREC = "#378ADD"   # 藍 = precision
+    C_REC  = "#D85A30"   # 橘 = recall
+
+    for k, ci in enumerate(show):
+        nm = names[ci]
+        ax = axes[k // ncol][k % ncol]
+        pos = (y == ci)
+        n_pos = int(pos.sum())
+
+        precs, recs, f1s = [], [], []
+        for t in ths:
+            pred = P[:, ci] >= t
+            tp = int(np.sum(pred & pos))
+            fp = int(np.sum(pred & ~pos))
+            fn = int(np.sum(~pred & pos))
+            pr = tp / (tp + fp) if (tp + fp) else 0.0
+            rc = tp / (tp + fn) if (tp + fn) else 0.0
+            precs.append(pr); recs.append(rc)
+            f1s.append(2 * pr * rc / (pr + rc) if (pr + rc) else 0.0)
+
+        ax.plot(ths, precs, "-o", color=C_PREC, ms=3.5, lw=1.8, label="Precision")
+        ax.plot(ths, recs,  "-o", color=C_REC,  ms=3.5, lw=1.8, label="Recall")
+
+        # 標出 F1 最高的 threshold
+        if f1s:
+            bi = int(np.argmax(f1s))
+            ax.axvline(ths[bi], color="#888", ls="--", lw=1, alpha=0.8)
+            ax.annotate(f"best F1 {f1s[bi]*100:.0f}% @ {ths[bi]:.2f}",
+                        xy=(ths[bi], 1.02), fontsize=7.5, color="#555",
+                        ha="center", va="bottom")
+
+        ax.set_title(f"{nm}  ({n_pos} pos)", fontsize=10, fontweight="bold")
+        ax.set_xlabel("Threshold", fontsize=9)
+        ax.set_ylabel("Score", fontsize=9)
+        ax.set_ylim(-0.02, 1.16)
+        ax.set_xlim(0, 1)
+        ax.grid(alpha=0.25, lw=0.7)
+        ax.tick_params(labelsize=8)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.legend(fontsize=8, frameon=False, loc="lower left", ncol=1)
+
+    # 藏掉多餘的空格子
+    for k in range(nc, nrow * ncol):
+        axes[k // ncol][k % ncol].axis("off")
+
+    fig.suptitle(f"Epoch {epoch} · {len(y)} validation windows · one-vs-rest",
+                 fontsize=11, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+    out = os.path.join(tempfile.gettempdir(), f"threshold_epoch{epoch}.png")
+    fig.savefig(out, facecolor="white", bbox_inches="tight")
+    plt.close(fig)
+    return out
+
+
+def refresh_threshold_epochs():
+    """Populate the epoch dropdown from whatever epochs have val data."""
+    eps = sorted((S.get("val_probs") or {}).keys())
+    if not eps:
+        return gr.update(choices=[], value=None)
+    return gr.update(choices=eps, value=eps[-1])
+
+
 # ====================== Training ======================
 
 def cancel_training():
@@ -1156,6 +1310,7 @@ def cancel_training():
 def run_training(repo,mname,vdir,ldir,odir,head_mode,
                  n_epochs,batch_sz,lr_str,val_pct,val_seed,train_seed,
                  num_workers,cache_local,
+                 use_sep_val,val_vdir,val_ldir,
                  aug_blur_frac,aug_tdrop_frac,aug_hflip_p,aug_vflip_p,
                  aug_rot_deg,aug_brightness,aug_contrast,aug_saturation,
                  aug_mult,aug_excluded_classes,
@@ -1198,7 +1353,20 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
 
     data=S["scan_data"]
     tidx=S["split_indices"]["train"]; vidx=S["split_indices"]["val"]
-    if not tidx and not vidx:
+
+    if use_sep_val:
+        # 驗證資料在另一個資料夾：訓練資料全部拿來訓練，不做切分。
+        # 把 val 影片附加到 data 後面，vidx 指向那些新項目。
+        eff_val_ldir = val_ldir if val_ldir else ldir
+        val_entries, vmsg = scan_val_folder(val_vdir, eff_val_ldir)
+        if not val_entries:
+            yield f"<p style='color:#e74c3c;font-weight:600;'>❌ {vmsg}</p>", U
+            return
+        data = list(data) + val_entries
+        tidx = list(range(len(S["scan_data"])))
+        vidx = list(range(len(S["scan_data"]), len(data)))
+        print(f"📁 Separate val folder: {len(tidx)} train / {len(vidx)} val videos")
+    elif not tidx and not vidx:
         if val_ratio>0 and len(data)>=4: tidx,vidx=train_test_split(list(range(len(data))),test_size=val_ratio,random_state=val_seed)
         else: tidx=list(range(len(data))); vidx=[]
 
@@ -1415,6 +1583,13 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
         with open(cfg_path, "w") as f: json.dump(cfg_out, f, indent=2)
 
         S["train_log"].append({"epoch":ep+1,"loss":ep_loss,"f1":f1m,"mAP":mAP,"f1_per":f1p,"ap_per":app,"prec_per":precp,"rec_per":recp,"path":mp,"config_path":cfg_path})
+        # 保留這個 epoch 的驗證機率與真實標籤，供 threshold 分析用（不寫進 json）
+        if len(al_) > 0:
+            S.setdefault("val_probs", {})[ep+1] = {
+                "y_true": np.asarray(al_, dtype=np.int16),
+                "probs": np.asarray(apr_, dtype=np.float32),
+                "names": list(new_names),
+            }
         yield html_progress(ep+1,n_epochs,total_win,total_win,"done",ws=ws),build_val_html(S["train_log"],new_names)
 
     with open(os.path.join(odir,"training_log.json"),"w") as f: json.dump(S["train_log"],f,indent=2)
@@ -1534,6 +1709,17 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 odir_in=gr.Textbox(label="Output directory",value=DEFAULT_OUTPUT_DIR,
                     placeholder="e.g. /content/drive/My Drive/trained_models/")
                 scan_st=gr.Textbox(label="Folder status",interactive=False,lines=1)
+
+            # 驗證資料放在另一個資料夾（勾了就不從訓練資料切分）
+            sep_val_cb=gr.Checkbox(label="✅ Validation data is in a separate folder",
+                                   value=False)
+            with gr.Group(visible=False) as sep_val_grp:
+                val_vdir_in=gr.Textbox(label="Val video directory",
+                    placeholder="e.g. /content/drive/My Drive/videos/val/")
+                val_ldir_in=gr.Textbox(label="Val label directory (留空 = 同上面的 Label directory)",
+                    placeholder="e.g. /content/drive/My Drive/labels_val/")
+                gr.Markdown("<p style='font-size:12px;color:#888;'>勾選後，"
+                            "下方的 Validation ratio 會被忽略，訓練資料不再切分。</p>")
             demo_btn=gr.Button("🎯 Load Demo",variant="secondary",size="sm")
             scan_d=gr.Button("📂 Load folder",variant="secondary")
 
@@ -1635,7 +1821,21 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 cancel_btn=gr.Button("⛔ Cancel training",variant="stop",size="lg")
             gr.Markdown("---")
             gr.Markdown("### ④ Validation results")
-            val_html=gr.HTML("<p style='color:#aaa;'>Training not started</p>")
+            with gr.Tabs():
+                with gr.Tab("Per-epoch"):
+                    val_html=gr.HTML("<p style='color:#aaa;'>Training not started</p>")
+                with gr.Tab("Threshold"):
+                    gr.Markdown("<p style='font-size:13px;color:#555;'>各 threshold 下的 "
+                                "precision（藍）與 recall（橘），one-vs-rest。"
+                                "虛線 = F1 最高的 threshold。</p>")
+                    with gr.Row():
+                        thr_epoch_dd=gr.Dropdown(label="Epoch",choices=[],value=None,
+                                                 interactive=True,scale=2)
+                        thr_steps=gr.Slider(minimum=4,maximum=20,step=1,value=10,
+                                            label="細度 (切幾段)",scale=3)
+                    thr_refresh=gr.Button("🔄 Refresh",size="sm")
+                    thr_html=gr.Image(label="Precision / Recall vs threshold",
+                                      show_label=False, container=False)
 
     # ===== WIRING =====
 
@@ -1705,16 +1905,28 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     next_btn.click(lambda hm,*dd: do_nav("next",hm,*dd),[head_mode_dd,*map_dds],
                    [frame_img,info_html,timeline_html,scrubber,cursor_state,nav_md,vid_list_html])
 
+    # 勾選「驗證資料在另一個資料夾」時展開輸入框
+    sep_val_cb.change(lambda on: gr.update(visible=on), [sep_val_cb], [sep_val_grp])
+
     # Training — pass head_mode + all mapping dropdowns instead of label_cb
     train_btn.click(run_training,
                     [repo_in,model_dd,vdir_in,ldir_in,odir_in,head_mode_dd,
                      ep_in,bs_in,lr_in,vr_in,val_seed_in,train_seed_in,
                      nw_in,cache_local_cb,
+                     sep_val_cb,val_vdir_in,val_ldir_in,
                      aug_blur_in,aug_tdrop_in,aug_hflip_in,aug_vflip_in,
                      aug_rot_in,aug_brightness_in,aug_contrast_in,aug_saturation_in,
                      aug_mult_in,aug_excluded_in,
                      *map_dds],
-                    [progress_html,val_html])
+                    [progress_html,val_html]) \
+             .then(refresh_threshold_epochs, None, [thr_epoch_dd]) \
+             .then(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
     cancel_btn.click(cancel_training, [], [progress_html])
+
+    # Threshold 分析：切換 epoch / 細度就重算
+    thr_epoch_dd.change(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
+    thr_steps.change(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
+    thr_refresh.click(refresh_threshold_epochs, None, [thr_epoch_dd]) \
+               .then(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
 
 demo.launch(debug=True,share=True)
