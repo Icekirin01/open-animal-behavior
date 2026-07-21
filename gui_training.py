@@ -1012,15 +1012,23 @@ MAPPER_HTML = r"""
   <div id="lm-hint"></div>
 </div>
 </div>
+"""
 
-<script>
-(function(){
+# Behaviour for the mapper. Injected through an event's js= argument,
+# because gr.HTML does not execute inline <script> tags in Gradio 6.
+MAPPER_JS = r"""
+() => {
+  if (window.__lmReady) return;
+  window.__lmReady = true;
+  (function(){
   let left=[], right=[], links={}, pending=null, seq=100, MODE="new", LOCKED=false;
   let dragFrom=null, justDragged=false;
 
   function findBridge(){
-    const d=window.parent&&window.parent.document?window.parent.document:document;
-    const el=d.querySelector("#lm_bridge textarea, #lm_bridge input");
+    let el=document.querySelector("#lm_bridge textarea, #lm_bridge input");
+    if(!el && window.parent && window.parent.document){
+      el=window.parent.document.querySelector("#lm_bridge textarea, #lm_bridge input");
+    }
     return el;
   }
   function push(){
@@ -1197,9 +1205,10 @@ MAPPER_HTML = r"""
     render();
   };
   window.addEventListener("resize",()=>draw());
-})();
-</script>
+  })();
+}
 """
+
 
 
 def _mapper_init_js(data_labels, head_mode, pretrained_names, dd_values):
@@ -1244,14 +1253,7 @@ def _mapper_init_js(data_labels, head_mode, pretrained_names, dd_values):
 
     cfg = {"left": list(data_labels), "right": right, "links": links,
            "mode": "pre" if locked else "new", "locked": locked}
-    # Emit the config as an HTML block containing a <script>. Gradio re-renders
-    # this on every update, so the script runs again and re-seeds the widget.
-    # (A JS string + eval() was too fragile; this needs no parent-doc access.)
-    payload = _json.dumps(cfg).replace("</", "<\\/")
-    return ("<div style='display:none'>"
-            f"<script>(function(){{var c={payload};"
-            "var go=function(){if(window.lmInit){window.lmInit(c);}"
-            "else{setTimeout(go,120);}};go();})();</script></div>")
+    return _json.dumps(cfg)
 
 
 def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
@@ -2385,6 +2387,8 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
 
     # ===== WIRING =====
 
+    # Install the mapper behaviour once the page is ready
+    demo.load(None, None, None, js=MAPPER_JS)
     demo.load(list_models,[repo_in],[model_dd,model_st])
     load_btn.click(load_pretrained,[repo_in,model_dd],[model_st])
 
@@ -2414,7 +2418,19 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         return _mapper_init_js(S["label_names"], head_mode,
                                S["cfg"]["class_names"] if S["cfg"] else [],
                                list(dd_vals))
-    lm_seed = gr.HTML("")
+    lm_seed = gr.Textbox(visible=False, elem_id="lm_seed")
+    # Apply the seed config in the browser. js= is used because gr.HTML does
+    # not run inline <script> tags in Gradio 6.
+    lm_seed.change(None, lm_seed, None, js="""
+      (cfg) => {
+        const go = () => {
+          if (!window.lmInit) { setTimeout(go, 120); return; }
+          try { window.lmInit(typeof cfg === "string" ? JSON.parse(cfg) : cfg); }
+          catch (e) { console.error("lmInit failed:", e); }
+        };
+        go();
+      }
+    """)
 
     demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
                    ).then(_update_excluded_choices,
