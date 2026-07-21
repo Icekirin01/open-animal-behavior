@@ -1,12 +1,12 @@
 # @title gui (with BORIS label support)
 
-# ==================== 👇 修改這裡 👇 ====================
+# ==================== EDIT BELOW ====================
 HF_REPO_ID = "yiheng266/animal-social-models"
 DEFAULT_VIDEO_DIR = "/content/drive/My Drive/videos/train/"
 DEFAULT_LABEL_DIR = "/content/drive/My Drive/labels/train/"
 DEFAULT_OUTPUT_DIR = "/content/drive/My Drive/trained_models/"
 MAX_LABELS = 15  # pre-built dropdown slots
-# ==================== 👆 修改以上即可 👆 ====================
+# ==================== END OF EDITS ====================
 
 import os, json, numpy as np, torch, torch.nn as nn, torch.optim as optim
 import gradio as gr, pandas as pd, random, shutil, time, traceback
@@ -954,6 +954,343 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
             img, info, tl, gr.update(maximum=max(T-1,0),value=0), cdata, vid_list, summary)
 
 
+MAPPER_HTML = r"""
+<div id="lm-wrap">
+<style>
+  #lm-wrap{--line:#5B7FC7;--line-hi:#D85A30;--other:#8a8a8a;--excl:#c0392b;
+           font-family:inherit;color:#222}
+  #lm-stage{position:relative;background:#fff;border:1px solid #e4e4e4;
+            border-radius:10px;padding:14px;overflow:hidden}
+  #lm-wires{position:absolute;inset:0;width:100%;height:100%;
+            pointer-events:none;z-index:1}
+  #lm-cols{position:relative;display:flex;gap:56px;justify-content:space-between;z-index:2}
+  .lm-col{flex:1;max-width:260px}
+  .lm-head{font-size:11px;font-weight:700;color:#666;letter-spacing:.04em;
+           text-transform:uppercase;margin-bottom:8px;text-align:center}
+  .lm-panel{border:1px solid #e5e7eb;background:#f9fafb;border-radius:8px;padding:10px;
+            min-height:120px;display:flex;flex-direction:column;gap:8px}
+  .lm-node{position:relative;background:#fff;border:1px solid #d1d5db;border-radius:8px;
+           min-height:40px;display:flex;align-items:center;justify-content:center;
+           font-size:13px;padding:8px 30px;text-align:center;cursor:pointer;
+           user-select:none;transition:box-shadow .12s,border-color .12s}
+  .lm-node:hover{border-color:#9ca3af;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  .lm-node.sel{border-color:var(--line-hi);box-shadow:0 0 0 3px rgba(216,90,48,.16)}
+  .lm-node.dim{opacity:.45}
+  .lm-node.drop{border-color:#2e7d32;background:#f0f7f0;
+                box-shadow:0 0 0 3px rgba(46,125,50,.15)}
+  .lm-node.dragging{border-color:var(--line-hi);box-shadow:0 0 0 3px rgba(216,90,48,.16)}
+  .lm-node.special{border-style:dashed;color:#777}
+  .lm-node[data-kind="other"]{border-color:var(--other)}
+  .lm-node[data-kind="exclude"]{border-color:var(--excl);color:var(--excl)}
+  .lm-port{position:absolute;top:50%;transform:translateY(-50%);width:12px;height:12px;
+           border-radius:50%;background:#fff;border:2px solid var(--line);z-index:3}
+  .lm-port.out{right:-7px;cursor:grab}
+  .lm-port.in{left:-7px}
+  body.lm-dragging .lm-port.out{cursor:grabbing}
+  .lm-del{position:absolute;top:50%;right:8px;transform:translateY(-50%);font-size:15px;
+          color:#bbb;cursor:pointer;line-height:1;width:18px;height:18px;display:flex;
+          align-items:center;justify-content:center;border-radius:4px}
+  .lm-del:hover{color:#c0392b;background:#fde8e6}
+  .lm-add{border:1px dashed #9ca3af;background:#fff;border-radius:8px;min-height:38px;
+          display:flex;align-items:center;justify-content:center;gap:6px;font-size:13px;
+          color:#6b7280;cursor:pointer}
+  .lm-add:hover{border-color:#2e7d32;color:#2e7d32;background:#f0f7f0}
+  input.lm-rename{font:inherit;font-size:13px;text-align:center;border:1px solid #2e7d32;
+                  border-radius:5px;padding:3px 6px;width:82%;outline:none}
+  #lm-hint{font-size:12px;color:#999;margin-top:9px;line-height:1.6}
+  .lm-warn{color:#c07a1d}
+</style>
+
+<div id="lm-stage">
+  <svg id="lm-wires"></svg>
+  <div id="lm-cols">
+    <div class="lm-col"><div class="lm-head">CSV labels</div>
+      <div class="lm-panel" id="lm-left"></div></div>
+    <div class="lm-col"><div class="lm-head">Training classes</div>
+      <div class="lm-panel" id="lm-right"></div></div>
+  </div>
+  <div id="lm-hint"></div>
+</div>
+</div>
+
+<script>
+(function(){
+  let left=[], right=[], links={}, pending=null, seq=100, MODE="new", LOCKED=false;
+  let dragFrom=null, justDragged=false;
+
+  function findBridge(){
+    const d=window.parent&&window.parent.document?window.parent.document:document;
+    const el=d.querySelector("#lm_bridge textarea, #lm_bridge input");
+    return el;
+  }
+  function push(){
+    const el=findBridge(); if(!el) return;
+    const nameOf=id=>(right.find(r=>r.id===id)||{}).name;
+    const kindOf=id=>(right.find(r=>r.id===id)||{}).kind;
+    const payload={mode:MODE,
+      classes:right.filter(r=>r.kind==="class").map(r=>r.name),
+      links:{}};
+    left.forEach((nm,i)=>{
+      const rid=links[i];
+      payload.links[nm]= rid===undefined ? null
+        : (kindOf(rid)==="other" ? "__OTHER__"
+        : (kindOf(rid)==="exclude" ? "__EXCLUDE__" : nameOf(rid)));
+    });
+    const setter=Object.getOwnPropertyDescriptor(
+      el.tagName==="TEXTAREA"?window.HTMLTextAreaElement.prototype
+                             :window.HTMLInputElement.prototype,"value").set;
+    setter.call(el, JSON.stringify(payload));
+    el.dispatchEvent(new Event("input",{bubbles:true}));
+  }
+
+  function addNode(){
+    const id="r"+(++seq);
+    const ex=right.findIndex(r=>r.kind==="exclude");
+    right.splice(ex<0?right.length:ex,0,{id,name:"NewClass",kind:"class"});
+    render(); edit(id);
+  }
+  function delNode(id){
+    const n=right.find(r=>r.id===id);
+    if(!n||n.kind!=="class") return;
+    right=right.filter(r=>r.id!==id);
+    Object.keys(links).forEach(k=>{ if(links[k]===id) delete links[k]; });
+    render();
+  }
+  function edit(id){
+    const n=right.find(r=>r.id===id); if(!n||n.kind!=="class"||LOCKED) return;
+    const box=document.querySelector('.lm-node[data-rid="'+id+'"]');
+    const span=box&&box.querySelector(".lm-nm"); if(!span) return;
+    const inp=document.createElement("input");
+    inp.className="lm-rename"; inp.value=n.name;
+    span.replaceWith(inp); inp.focus(); inp.select();
+    const commit=()=>{ const v=inp.value.trim(); if(v) n.name=v; render(); };
+    inp.onblur=commit;
+    inp.onkeydown=e=>{ e.stopPropagation();
+      if(e.key==="Enter") inp.blur();
+      if(e.key==="Escape"){ inp.onblur=null; render(); } };
+    inp.onclick=e=>e.stopPropagation();
+    inp.onpointerdown=e=>e.stopPropagation();
+  }
+  function pick(i){ pending=(pending===i)?null:i; render(); }
+  function connect(rid){ if(pending===null) return; links[pending]=rid; pending=null; render(); }
+
+  function startDrag(e,i){
+    if(e.button!==undefined&&e.button!==0) return;
+    e.preventDefault(); dragFrom=i; justDragged=false; pending=null;
+    document.body.classList.add("lm-dragging");
+    window.addEventListener("pointermove",onDrag);
+    window.addEventListener("pointerup",endDrag,{once:true});
+  }
+  function nodeUnder(e){
+    const el=document.elementFromPoint(e.clientX,e.clientY);
+    return el?el.closest(".lm-node[data-rid]"):null;
+  }
+  function onDrag(e){
+    justDragged=true;
+    document.querySelectorAll(".lm-node[data-rid]").forEach(n=>n.classList.remove("drop"));
+    const t=nodeUnder(e); if(t) t.classList.add("drop");
+    draw(e);
+  }
+  function endDrag(e){
+    window.removeEventListener("pointermove",onDrag);
+    document.body.classList.remove("lm-dragging");
+    const t=nodeUnder(e), from=dragFrom; dragFrom=null;
+    document.querySelectorAll(".lm-node").forEach(n=>n.classList.remove("drop","dragging"));
+    if(t&&from!==null&&justDragged) links[from]=t.dataset.rid;
+    render(); setTimeout(()=>{justDragged=false;},0);
+  }
+
+  function render(){
+    const L=document.getElementById("lm-left"), R=document.getElementById("lm-right");
+    if(!L||!R) return;
+    L.innerHTML=""; R.innerHTML="";
+    left.forEach((nm,i)=>{
+      const d=document.createElement("div");
+      d.className="lm-node"+(pending===i?" sel":"")+((pending!==null&&pending!==i)?" dim":"");
+      d.dataset.li=i;
+      d.innerHTML='<span>'+nm+'</span><span class="lm-port out"></span>';
+      d.onpointerdown=e=>startDrag(e,i);
+      d.onclick=()=>{ if(!justDragged) pick(i); };
+      L.appendChild(d);
+    });
+    right.forEach(r=>{
+      const d=document.createElement("div");
+      d.className="lm-node"+(r.kind!=="class"?" special":"");
+      d.dataset.rid=r.id; d.dataset.kind=r.kind;
+      d.innerHTML='<span class="lm-port in"></span><span class="lm-nm">'+r.name+'</span>'
+                + ((r.kind==="class"&&!LOCKED)?'<span class="lm-del" title="Delete">×</span>':'');
+      d.onclick=e=>{ if(e.target.classList.contains("lm-del")){delNode(r.id);return;}
+                     if(!justDragged) connect(r.id); };
+      d.ondblclick=()=>edit(r.id);
+      R.appendChild(d);
+    });
+    if(!LOCKED){
+      const a=document.createElement("div");
+      a.className="lm-add"; a.innerHTML="<span>+</span><span>Add class</span>";
+      a.onclick=addNode; R.appendChild(a);
+    }
+    requestAnimationFrame(()=>draw());
+    const unset=left.filter((n,i)=>links[i]===undefined);
+    document.getElementById("lm-hint").innerHTML=
+      (pending!==null?'<b style="color:var(--line-hi)">Selected "'+left[pending]
+        +'" — now click a box on the right</b><br>':'')
+      +(unset.length?'<span class="lm-warn">⚠ Not connected: '+unset.join(", ")
+        +' (treated as unassigned)</span>'
+        :'<span style="color:#2e7d32">✓ All labels mapped</span>');
+    push();
+  }
+
+  function draw(dragEvt){
+    const svg=document.getElementById("lm-wires");
+    const stage=document.getElementById("lm-stage");
+    if(!svg||!stage) return;
+    const st=stage.getBoundingClientRect(); svg.innerHTML="";
+    Object.entries(links).forEach(([li,rid])=>{
+      const a=document.querySelector('.lm-node[data-li="'+li+'"] .lm-port.out');
+      const b=document.querySelector('.lm-node[data-rid="'+rid+'"] .lm-port.in');
+      if(!a||!b) return;
+      const ra=a.getBoundingClientRect(), rb=b.getBoundingClientRect();
+      const x1=ra.left+ra.width/2-st.left, y1=ra.top+ra.height/2-st.top;
+      const x2=rb.left+rb.width/2-st.left, y2=rb.top+rb.height/2-st.top;
+      const p=document.createElementNS("http://www.w3.org/2000/svg","path");
+      const mx=(x1+x2)/2;
+      p.setAttribute("d","M"+x1+","+y1+" C"+mx+","+y1+" "+mx+","+y2+" "+x2+","+y2);
+      p.setAttribute("stroke","var(--line)"); p.setAttribute("stroke-width","1.6");
+      p.setAttribute("fill","none");
+      p.style.pointerEvents="stroke"; p.style.cursor="pointer";
+      p.onmouseenter=()=>p.setAttribute("stroke","var(--line-hi)");
+      p.onmouseleave=()=>p.setAttribute("stroke","var(--line)");
+      p.onclick=()=>{ delete links[li]; render(); };
+      svg.appendChild(p);
+    });
+    if(dragFrom!==null&&dragEvt){
+      const a=document.querySelector('.lm-node[data-li="'+dragFrom+'"] .lm-port.out');
+      if(a){
+        const ra=a.getBoundingClientRect();
+        const x1=ra.left+ra.width/2-st.left, y1=ra.top+ra.height/2-st.top;
+        const x2=dragEvt.clientX-st.left,    y2=dragEvt.clientY-st.top;
+        const p=document.createElementNS("http://www.w3.org/2000/svg","path");
+        const mx=(x1+x2)/2;
+        p.setAttribute("d","M"+x1+","+y1+" C"+mx+","+y1+" "+mx+","+y2+" "+x2+","+y2);
+        p.setAttribute("stroke","var(--line-hi)"); p.setAttribute("stroke-width","1.8");
+        p.setAttribute("stroke-dasharray","5,4"); p.setAttribute("fill","none");
+        svg.appendChild(p);
+      }
+    }
+  }
+
+  // Python → JS: seed the widget from the current scan / head mode
+  window.lmInit=function(cfg){
+    left=cfg.left||[]; MODE=cfg.mode||"new"; LOCKED=!!cfg.locked;
+    right=(cfg.right||[]).map((o,k)=>({id:"r"+k,name:o.name,kind:o.kind}));
+    links={};
+    left.forEach((nm,i)=>{
+      const want=(cfg.links||{})[nm];
+      if(want===null||want===undefined) return;
+      let hit;
+      if(want==="__OTHER__")        hit=right.find(r=>r.kind==="other");
+      else if(want==="__EXCLUDE__") hit=right.find(r=>r.kind==="exclude");
+      else                          hit=right.find(r=>r.kind==="class"&&r.name===want);
+      if(hit) links[i]=hit.id;
+    });
+    seq=right.length+10; pending=null;
+    render();
+  };
+  window.addEventListener("resize",()=>draw());
+})();
+</script>
+"""
+
+
+def _mapper_init_js(data_labels, head_mode, pretrained_names, dd_values):
+    """Build the JS call that seeds the mapper from current dropdown state."""
+    import json as _json
+    locked = (head_mode == "Pretrain head" and bool(pretrained_names))
+    if locked:
+        classes = [n for n in pretrained_names if n.lower() not in ("other", "others")]
+    else:
+        keep = []
+        for i, nm in enumerate(data_labels):
+            v = str(dd_values[i]) if i < len(dd_values) else "keep"
+            if "(keep)" in v or v == "keep":
+                keep.append(nm)
+        classes = keep or [n for n in data_labels
+                           if n.lower() not in ("other", "others")]
+
+    right = [{"name": c, "kind": "class"} for c in classes]
+    right.append({"name": "Other", "kind": "other"})
+    right.append({"name": "Exclude", "kind": "exclude"})
+
+    links = {}
+    for i, nm in enumerate(data_labels):
+        v = str(dd_values[i]) if i < len(dd_values) else ""
+        if v == "→ Exclude":
+            links[nm] = "__EXCLUDE__"
+        elif v == "→ Other":
+            links[nm] = "__OTHER__"
+        elif "merge into" in v:
+            links[nm] = v.replace("→ merge into ", "")
+        elif "(keep)" in v or v == "keep":
+            links[nm] = nm
+        elif v and v not in ("", "None"):
+            links[nm] = v
+        else:
+            links[nm] = None
+
+    cfg = {"left": list(data_labels), "right": right, "links": links,
+           "mode": "pre" if locked else "new", "locked": locked}
+    return f"() => {{ if (window.lmInit) window.lmInit({_json.dumps(cfg)}); }}"
+
+
+def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
+    """Bridge JSON (from the visual mapper) → dropdown values.
+
+    The dropdowns remain the single source of truth for the rest of the app;
+    the mapper is just a nicer way to edit them. Returns updates for all
+    MAX_LABELS dropdown slots.
+    """
+    import json as _json
+    N = MAX_LABELS
+    data_labels = S["label_names"]
+    n = len(data_labels)
+    if not bridge_json or n == 0:
+        return tuple(gr.update() for _ in range(N))
+    try:
+        payload = _json.loads(bridge_json)
+    except Exception:
+        return tuple(gr.update() for _ in range(N))
+
+    links = payload.get("links", {})
+    pretrained_names = S["cfg"]["class_names"] if S["cfg"] else []
+    is_pre = (head_mode == "Pretrain head" and bool(pretrained_names))
+
+    out = []
+    for i in range(N):
+        if i >= n:
+            out.append(gr.update()); continue
+        nm = data_labels[i]
+        tgt = links.get(nm)
+
+        if tgt is None:
+            out.append(gr.update(value="→ Other")); continue
+        if tgt == "__EXCLUDE__":
+            out.append(gr.update(value="→ Exclude")); continue
+        if tgt == "__OTHER__":
+            out.append(gr.update(value="→ Other")); continue
+
+        if is_pre:
+            out.append(gr.update(value=tgt if tgt in pretrained_names else "→ Other"))
+        else:
+            if tgt == nm:
+                out.append(gr.update(value=f"{nm} (keep)"))
+            elif tgt in data_labels or tgt in payload.get("classes", []):
+                out.append(gr.update(value=f"→ merge into {tgt}"))
+            else:
+                # target no longer exists (box was deleted/renamed) — fall back
+                out.append(gr.update(value="→ Other"))
+    return tuple(out)
+
+
 # ====================== Mapping Change Handler ======================
 
 def on_mapping_change(head_mode, *dd_vals):
@@ -1222,11 +1559,12 @@ def build_threshold_table(epoch, n_steps=10):
         n_steps = max(2, int(n_steps))
     except Exception:
         n_steps = 10
-    ths = np.linspace(0.0, 1.0, n_steps + 1)[1:-1]   # 排除 0 和 1（無意義）
+    ths = np.linspace(0.0, 1.0, n_steps + 1)[1:-1]   # exclude 0 and 1 (degenerate)
     if len(ths) == 0:
         ths = np.array([0.5])
 
-    # Other/Others 不畫（它代表「沒有目標行為」，threshold 分析沒有意義）
+    # Skip Other/Others: it means "no target behaviour", so a threshold sweep
+    # on it is not meaningful
     show = [i for i, n in enumerate(names)
             if n.lower() not in ("others", "other")]
     if not show:
@@ -1237,8 +1575,8 @@ def build_threshold_table(epoch, n_steps=10):
     fig, axes = plt.subplots(nrow, ncol, figsize=(4.6 * ncol, 3.4 * nrow),
                              dpi=130, squeeze=False)
 
-    C_PREC = "#378ADD"   # 藍 = precision
-    C_REC  = "#D85A30"   # 橘 = recall
+    C_PREC = "#378ADD"   # blue = precision
+    C_REC  = "#D85A30"   # orange = recall
 
     for k, ci in enumerate(show):
         nm = names[ci]
@@ -1260,7 +1598,7 @@ def build_threshold_table(epoch, n_steps=10):
         ax.plot(ths, precs, "-o", color=C_PREC, ms=3.5, lw=1.8, label="Precision")
         ax.plot(ths, recs,  "-o", color=C_REC,  ms=3.5, lw=1.8, label="Recall")
 
-        # 標出 F1 最高的 threshold
+        # mark the threshold with the best F1
         if f1s:
             bi = int(np.argmax(f1s))
             ax.axvline(ths[bi], color="#888", ls="--", lw=1, alpha=0.8)
@@ -1279,7 +1617,7 @@ def build_threshold_table(epoch, n_steps=10):
             ax.spines[side].set_visible(False)
         ax.legend(fontsize=8, frameon=False, loc="lower left", ncol=1)
 
-    # 藏掉多餘的空格子
+    # hide unused grid cells
     for k in range(nc, nrow * ncol):
         axes[k // ncol][k % ncol].axis("off")
 
@@ -1294,7 +1632,7 @@ def build_threshold_table(epoch, n_steps=10):
 
 
 def _runs_of(seq):
-    """把逐幀標籤壓成 (label, start, length) 區段。"""
+    """Compress per-frame labels into (label, start, length) runs."""
     out = []
     cur, st = seq[0], 0
     for i in range(1, len(seq)):
@@ -1305,7 +1643,7 @@ def _runs_of(seq):
 
 
 def list_val_videos(epoch):
-    """驗證影片清單（給下拉選單用）。"""
+    """List of validation videos (for the dropdown)."""
     vw = (S.get("val_windows") or {})
     try:
         epoch = int(epoch)
@@ -1318,10 +1656,12 @@ def list_val_videos(epoch):
 
 
 def build_val_ethogram(epoch, vf):
-    """畫某支驗證影片的 ethogram：上=prediction(黃)，下=ground truth(藍)。
+    """Ethogram for one validation video: prediction (yellow, top) over
+    ground truth (blue, bottom).
 
-    視窗預測(ws=16, stride=4)會攤回它涵蓋的每一幀，重疊處取多數決，
-    與推論時的聚合方式一致。Ground truth 直接讀原始 label 檔的逐幀標籤。
+    Window predictions (ws=16, stride=4) are scattered back onto every frame
+    they cover; overlaps take a majority vote, matching how inference
+    aggregates. Ground truth is read per-frame from the original label file.
     """
     import tempfile
     import matplotlib
@@ -1341,7 +1681,7 @@ def build_val_ethogram(epoch, vf):
     names = d["names"]; label_map = d["label_map"]
     samples = d["samples"]; preds = d["pred"]
 
-    # 找出這支影片的所有視窗
+    # collect every window belonging to this video
     vp = None
     win = []
     for k, (p_, idx_) in enumerate(samples):
@@ -1351,7 +1691,7 @@ def build_val_ethogram(epoch, vf):
     if vp is None or not win:
         return None
 
-    # ---- ground truth：逐幀，經過 label_map 映射 ----
+    # ---- ground truth: per-frame, passed through label_map ----
     try:
         vr = VideoReader(vp, ctx=cpu(0)); T = len(vr); fps = vr.get_avg_fps(); del vr
     except Exception:
@@ -1362,7 +1702,7 @@ def build_val_ethogram(epoch, vf):
         if entry.get("vp") == vp:
             lp = entry.get("lp"); break
     if lp is None:
-        # 分開的 val 資料夾：scan_data 找不到就用同名 csv 猜
+        # separate val folder: not in scan_data, so fall back to a same-named csv
         base = os.path.splitext(vf)[0]
         cand = os.path.join(os.path.dirname(vp), base + ".csv")
         lp = cand if os.path.exists(cand) else None
@@ -1379,7 +1719,7 @@ def build_val_ethogram(epoch, vf):
         except Exception as e:
             print(f"⚠️ GT load failed for {vf}: {e}")
 
-    # ---- prediction：視窗攤回幀，重疊取多數決 ----
+    # ---- prediction: scatter windows back onto frames, majority vote ----
     votes = [[] for _ in range(T)]
     for idx_, lbl in win:
         for i in idx_:
@@ -1387,7 +1727,7 @@ def build_val_ethogram(epoch, vf):
                 votes[i].append(lbl)
     pred = np.array([Counter(v).most_common(1)[0][0] if v else -1 for v in votes])
 
-    # ---- 畫圖（排除 Other 與被 exclude 的 -1）----
+    # ---- plot (excluding Other and excluded frames marked -1) ----
     show = [i for i, n in enumerate(names)
             if n.lower() not in ("other", "others")]
     if not show:
@@ -1395,8 +1735,8 @@ def build_val_ethogram(epoch, vf):
     row_of = {c: k for k, c in enumerate(show)}
     n_show = len(show)
 
-    C_PRED = "#E8B84B"   # 黃 = prediction（上）
-    C_GT   = "#378ADD"   # 藍 = ground truth（下）
+    C_PRED = "#E8B84B"   # yellow = prediction (top)
+    C_GT   = "#378ADD"   # blue = ground truth (bottom)
 
     fig, ax = plt.subplots(figsize=(13, max(2.4, 0.62 * n_show + 1.5)), dpi=140)
     ax.set_facecolor("white")
@@ -1428,7 +1768,7 @@ def build_val_ethogram(epoch, vf):
         sec.set_xlabel("Time (s)", fontsize=9)
         sec.tick_params(labelsize=8)
 
-    # 一致率：只看至少有一邊是「非 Other 行為」的幀
+    # agreement: only frames where at least one side is a non-Other behaviour
     m = np.isin(gt, show) | np.isin(pred, show)
     agree = float(np.mean(gt[m] == pred[m])) * 100 if m.any() else 0.0
     ax.annotate(f"frame agreement (non-Other): {agree:.1f}%",
@@ -1510,8 +1850,8 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
     tidx=S["split_indices"]["train"]; vidx=S["split_indices"]["val"]
 
     if use_sep_val:
-        # 驗證資料在另一個資料夾：訓練資料全部拿來訓練，不做切分。
-        # 把 val 影片附加到 data 後面，vidx 指向那些新項目。
+        # Separate validation folder: use all training data for training (no
+        # split). Append val videos to `data` and point vidx at those entries.
         eff_val_ldir = val_ldir if val_ldir else ldir
         val_entries, vmsg = scan_val_folder(val_vdir, eff_val_ldir)
         if not val_entries:
@@ -1738,15 +2078,17 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
         with open(cfg_path, "w") as f: json.dump(cfg_out, f, indent=2)
 
         S["train_log"].append({"epoch":ep+1,"loss":ep_loss,"f1":f1m,"mAP":mAP,"f1_per":f1p,"ap_per":app,"prec_per":precp,"rec_per":recp,"path":mp,"config_path":cfg_path})
-        # 保留這個 epoch 的驗證機率與真實標籤，供 threshold 分析用（不寫進 json）
+        # keep this epoch's val probabilities + true labels for the threshold
+        # analysis (deliberately NOT written to json - it would bloat the file)
         if len(al_) > 0:
             S.setdefault("val_probs", {})[ep+1] = {
                 "y_true": np.asarray(al_, dtype=np.int16),
                 "probs": np.asarray(apr_, dtype=np.float32),
                 "names": list(new_names),
             }
-            # val_loader 是 shuffle=False，所以 ap_ 的順序 == val_ds.samples 的順序。
-            # 存下每個視窗的 (影片, 幀索引, 預測) 就能把視窗預測攤回逐幀畫 ethogram。
+            # val_loader uses shuffle=False, so ap_ is in the same order as
+            # val_ds.samples. Storing (video, frame indices, prediction) per
+            # window lets us scatter predictions back onto frames later.
             try:
                 S.setdefault("val_windows", {})[ep+1] = {
                     "samples": [(vp_, list(idx_)) for vp_, idx_, _ in val_ds.samples],
@@ -1780,14 +2122,15 @@ CURSOR_JS = """
 YELLOW_THEME = gr.themes.Soft(primary_hue=gr.themes.colors.amber, secondary_hue=gr.themes.colors.yellow, neutral_hue=gr.themes.colors.gray)
 
 # ====================== Custom CSS ======================
-# 全域樣式覆蓋：字體全黑、標題放大、格線加深、背景加深對比更明顯。
+# Global style overrides: black text, larger headings, stronger borders and
+# a slightly darker page background for contrast.
 CUSTOM_CSS = """
-/* 背景加深，區塊維持亮白 → 對比更明顯 */
+/* darker page background, blocks stay white -> stronger contrast */
 .gradio-container { background: #d8d4c4 !important; }
 .gr-box, .block, .form, .gr-panel, .gr-accordion,
 .gradio-container .prose { background: #ffffff !important; }
 
-/* 全域字體轉全黑（覆蓋 Gradio 灰色 secondary / tertiary 變數） */
+/* force black text (overrides Gradio grey secondary/tertiary vars) */
 .gradio-container, .gradio-container * {
     color: #000000 !important;
     --color-text-primary: #000000;
@@ -1795,8 +2138,9 @@ CUSTOM_CSS = """
     --color-text-tertiary: #000000;
 }
 
-/* 邊框策略：不要對每個 .block / .form 畫完整外框（那會讓 gr.Group 內的
-   元件各自變成一個框、無法黏合）。只對「實際輸入元件」和 accordion 畫框。 */
+/* Border strategy: do NOT outline every .block / .form (that
+   would box every child of a gr.Group separately). Only real inputs and
+   accordions get a border. */
 input, textarea, select,
 .gr-input, .gr-dropdown, .gr-accordion {
     border: 1.5px solid #555555 !important;
@@ -1807,12 +2151,12 @@ input, textarea, select,
     border-radius: 6px !important;
 }
 
-/* 區塊標題（Markdown 的 h1 / h2 / h3）放大一點點 */
+/* slightly larger section headings (Markdown h1/h2/h3) */
 .gradio-container h1 { font-size: 30px !important; font-weight: 700 !important; }
 .gradio-container h2 { font-size: 22px !important; font-weight: 700 !important; }
 .gradio-container h3 { font-size: 18px !important; font-weight: 700 !important; }
 
-/* 元件 label 也轉黑加粗 */
+/* component labels: black and bold */
 label, .gr-input-label, span[data-testid="block-info"] {
     color: #000000 !important; font-weight: 600 !important;
 }
@@ -1876,16 +2220,16 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                     placeholder="e.g. /content/drive/My Drive/trained_models/")
                 scan_st=gr.Textbox(label="Folder status",interactive=False,lines=1)
 
-            # 驗證資料放在另一個資料夾（勾了就不從訓練資料切分）
+            # Validation data in a separate folder (when ticked, no split of train data)
             sep_val_cb=gr.Checkbox(label="✅ Validation data is in a separate folder",
                                    value=False)
             with gr.Group(visible=False) as sep_val_grp:
                 val_vdir_in=gr.Textbox(label="Val video directory",
                     placeholder="e.g. /content/drive/My Drive/videos/val/")
-                val_ldir_in=gr.Textbox(label="Val label directory (留空 = 同上面的 Label directory)",
+                val_ldir_in=gr.Textbox(label="Val label directory (leave blank = use Label directory above)",
                     placeholder="e.g. /content/drive/My Drive/labels_val/")
-                gr.Markdown("<p style='font-size:12px;color:#888;'>勾選後，"
-                            "下方的 Validation ratio 會被忽略，訓練資料不再切分。</p>")
+                gr.Markdown("<p style='font-size:12px;color:#888;'>When enabled, the "
+                            "Validation ratio below is ignored and the training data is not split.</p>")
             demo_btn=gr.Button("🎯 Load Demo",variant="secondary",size="sm")
             scan_d=gr.Button("📂 Load folder",variant="secondary")
 
@@ -1915,7 +2259,14 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
             with gr.Group():
                 head_mode_dd=gr.Dropdown(label="Head type",choices=["Pretrain head","New head"],value="Pretrain head",interactive=True)
 
-                # Pre-build MAX_LABELS dropdown slots (hidden by default)
+                # Visual label mapper (drag to connect). The dropdowns below
+                # stay the source of truth for the rest of the app — the mapper
+                # just writes into them through a hidden JSON bridge.
+                gr.HTML(MAPPER_HTML)
+                lm_bridge = gr.Textbox(elem_id="lm_bridge", visible=False)
+                lm_sync   = gr.Button("Apply mapping", visible=False)
+
+                # Pre-build MAX_LABELS dropdown slots (hidden — driven by the mapper)
                 map_dds = []
                 for i in range(MAX_LABELS):
                     dd = gr.Dropdown(label=f"label_{i}", choices=[], value=None, interactive=True, visible=False)
@@ -1991,21 +2342,21 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 with gr.Tab("Per-epoch"):
                     val_html=gr.HTML("<p style='color:#aaa;'>Training not started</p>")
                 with gr.Tab("Threshold"):
-                    gr.Markdown("<p style='font-size:13px;color:#555;'>各 threshold 下的 "
-                                "precision（藍）與 recall（橘），one-vs-rest。"
-                                "虛線 = F1 最高的 threshold。</p>")
+                    gr.Markdown("<p style='font-size:13px;color:#555;'>Precision (blue) and "
+                                "recall (orange) across thresholds, one-vs-rest. "
+                                "Dashed line = threshold with the best F1.</p>")
                     with gr.Row():
                         thr_epoch_dd=gr.Dropdown(label="Epoch",choices=[],value=None,
                                                  interactive=True,scale=2)
                         thr_steps=gr.Slider(minimum=4,maximum=20,step=1,value=10,
-                                            label="細度 (切幾段)",scale=3)
+                                            label="Granularity (steps)",scale=3)
                     thr_refresh=gr.Button("🔄 Refresh",size="sm")
                     thr_html=gr.Image(label="Precision / Recall vs threshold",
                                       show_label=False, container=False)
                 with gr.Tab("Ethogram"):
-                    gr.Markdown("<p style='font-size:13px;color:#555;'>驗證影片的 "
-                                "<b style='color:#E8B84B;'>prediction（黃，上）</b> vs "
-                                "<b style='color:#378ADD;'>ground truth（藍，下）</b>，排除 Other。</p>")
+                    gr.Markdown("<p style='font-size:13px;color:#555;'>Validation videos: "
+                                "<b style='color:#E8B84B;'>prediction (yellow, top)</b> vs "
+                                "<b style='color:#378ADD;'>ground truth (blue, bottom)</b>. Other excluded.</p>")
                     with gr.Row():
                         eth_epoch_dd=gr.Dropdown(label="Epoch",choices=[],value=None,
                                                  interactive=True,scale=2)
@@ -2040,18 +2391,37 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         return gr.update(choices=list(new_names), value=value)
 
     # Demo button → download from HF + auto-scan (same outputs as Load folder, paths stay untouched)
+    # Seed the visual mapper (JS) from Python state
+    def _seed_mapper(head_mode, *dd_vals):
+        return _mapper_init_js(S["label_names"], head_mode,
+                               S["cfg"]["class_names"] if S["cfg"] else [],
+                               list(dd_vals))
+    lm_seed = gr.Textbox(visible=False)
+    lm_seed.change(None, lm_seed, None,
+                   js="(s) => { try{ eval('('+s+')')(); }catch(e){} }")
+
     demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
                    ).then(_update_excluded_choices,
-                          [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+                          [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
+                   ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed)
 
     # Load folder → scan user's own directories
     scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
                  ).then(_update_excluded_choices,
-                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
+                 ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed)
 
     # Head mode change → rebuild all mapping dropdowns + timeline + summary
     map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
     head_mode_dd.change(on_head_mode_change, [head_mode_dd, *map_dds], map_change_outputs)
+
+    # Visual mapper → dropdowns → (existing) mapping refresh chain
+    lm_bridge.change(apply_mapper_bridge, [lm_bridge, head_mode_dd, *map_dds], map_dds) \
+             .then(on_mapping_change, [head_mode_dd, *map_dds], map_change_outputs) \
+             .then(_update_excluded_choices,
+                   [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+
+    head_mode_dd.change(_seed_mapper, [head_mode_dd, *map_dds], lm_seed)
 
     # Any mapping dropdown change → rebuild others + timeline + summary
     for dd in map_dds:
@@ -2082,7 +2452,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     next_btn.click(lambda hm,*dd: do_nav("next",hm,*dd),[head_mode_dd,*map_dds],
                    [frame_img,info_html,timeline_html,scrubber,cursor_state,nav_md,vid_list_html])
 
-    # 勾選「驗證資料在另一個資料夾」時展開輸入框
+    # reveal the inputs when "separate validation folder" is ticked
     sep_val_cb.change(lambda on: gr.update(visible=on), [sep_val_cb], [sep_val_grp])
 
     # Training — pass head_mode + all mapping dropdowns instead of label_cb
@@ -2103,13 +2473,13 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
              .then(build_val_ethogram, [eth_epoch_dd, eth_vid_dd], [eth_img])
     cancel_btn.click(cancel_training, [], [progress_html])
 
-    # Threshold 分析：切換 epoch / 細度就重算
+    # Threshold analysis: recompute when epoch or granularity changes
     thr_epoch_dd.change(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
     thr_steps.change(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
     thr_refresh.click(refresh_threshold_epochs, None, [thr_epoch_dd]) \
                .then(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
 
-    # Val ethogram：選 epoch → 更新影片清單 → 畫圖
+    # Val ethogram: pick epoch -> refresh video list -> draw
     eth_epoch_dd.change(list_val_videos, [eth_epoch_dd], [eth_vid_dd]) \
                 .then(build_val_ethogram, [eth_epoch_dd, eth_vid_dd], [eth_img])
     eth_vid_dd.change(build_val_ethogram, [eth_epoch_dd, eth_vid_dd], [eth_img])
