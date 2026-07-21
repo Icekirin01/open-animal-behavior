@@ -1293,6 +1293,161 @@ def build_threshold_table(epoch, n_steps=10):
     return out
 
 
+def _runs_of(seq):
+    """把逐幀標籤壓成 (label, start, length) 區段。"""
+    out = []
+    cur, st = seq[0], 0
+    for i in range(1, len(seq)):
+        if seq[i] != cur:
+            out.append((cur, st, i - st)); cur, st = seq[i], i
+    out.append((cur, st, len(seq) - st))
+    return out
+
+
+def list_val_videos(epoch):
+    """驗證影片清單（給下拉選單用）。"""
+    vw = (S.get("val_windows") or {})
+    try:
+        epoch = int(epoch)
+    except Exception:
+        return gr.update(choices=[], value=None)
+    if epoch not in vw:
+        return gr.update(choices=[], value=None)
+    vids = sorted({os.path.basename(vp) for vp, _ in vw[epoch]["samples"]})
+    return gr.update(choices=vids, value=vids[0] if vids else None)
+
+
+def build_val_ethogram(epoch, vf):
+    """畫某支驗證影片的 ethogram：上=prediction(黃)，下=ground truth(藍)。
+
+    視窗預測(ws=16, stride=4)會攤回它涵蓋的每一幀，重疊處取多數決，
+    與推論時的聚合方式一致。Ground truth 直接讀原始 label 檔的逐幀標籤。
+    """
+    import tempfile
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    vw = (S.get("val_windows") or {})
+    try:
+        epoch = int(epoch)
+    except Exception:
+        return None
+    if epoch not in vw or not vf:
+        return None
+
+    d = vw[epoch]
+    names = d["names"]; label_map = d["label_map"]
+    samples = d["samples"]; preds = d["pred"]
+
+    # 找出這支影片的所有視窗
+    vp = None
+    win = []
+    for k, (p_, idx_) in enumerate(samples):
+        if os.path.basename(p_) == vf:
+            vp = p_
+            win.append((idx_, int(preds[k])))
+    if vp is None or not win:
+        return None
+
+    # ---- ground truth：逐幀，經過 label_map 映射 ----
+    try:
+        vr = VideoReader(vp, ctx=cpu(0)); T = len(vr); fps = vr.get_avg_fps(); del vr
+    except Exception:
+        return None
+
+    lp = None
+    for entry in (S.get("scan_data") or []):
+        if entry.get("vp") == vp:
+            lp = entry.get("lp"); break
+    if lp is None:
+        # 分開的 val 資料夾：scan_data 找不到就用同名 csv 猜
+        base = os.path.splitext(vf)[0]
+        cand = os.path.join(os.path.dirname(vp), base + ".csv")
+        lp = cand if os.path.exists(cand) else None
+
+    gt = np.full(T, -1, dtype=int)
+    if lp:
+        try:
+            oh, col_names = load_label_data(lp, T, fps)
+            global_names = S.get("label_names", []) or []
+            if global_names and col_names != global_names:
+                oh = align_onehot_to_global(oh, col_names, global_names)
+            raw = np.argmax(oh, axis=1)
+            gt = np.array([label_map.get(int(l), -1) for l in raw])
+        except Exception as e:
+            print(f"⚠️ GT load failed for {vf}: {e}")
+
+    # ---- prediction：視窗攤回幀，重疊取多數決 ----
+    votes = [[] for _ in range(T)]
+    for idx_, lbl in win:
+        for i in idx_:
+            if 0 <= i < T:
+                votes[i].append(lbl)
+    pred = np.array([Counter(v).most_common(1)[0][0] if v else -1 for v in votes])
+
+    # ---- 畫圖（排除 Other 與被 exclude 的 -1）----
+    show = [i for i, n in enumerate(names)
+            if n.lower() not in ("other", "others")]
+    if not show:
+        return None
+    row_of = {c: k for k, c in enumerate(show)}
+    n_show = len(show)
+
+    C_PRED = "#E8B84B"   # 黃 = prediction（上）
+    C_GT   = "#378ADD"   # 藍 = ground truth（下）
+
+    fig, ax = plt.subplots(figsize=(13, max(2.4, 0.62 * n_show + 1.5)), dpi=140)
+    ax.set_facecolor("white")
+
+    H, GAP = 0.34, 0.03
+    for seq, color, on_top in ((pred, C_PRED, True), (gt, C_GT, False)):
+        for cls, s, w in _runs_of(seq):
+            if cls not in row_of:
+                continue
+            ybase = n_show - 1 - row_of[cls]
+            y0 = ybase + (GAP / 2) if on_top else ybase - H - (GAP / 2)
+            ax.broken_barh([(s, w)], (y0, H), facecolors=color, edgecolors="none")
+
+    ax.set_yticks(range(n_show))
+    ax.set_yticklabels([names[c] for c in reversed(show)], fontsize=10)
+    ax.set_ylim(-0.75, n_show - 0.25)
+    ax.set_xlim(0, T)
+    ax.set_xlabel("Frame", fontsize=9)
+    ax.set_title(f"{vf}  ·  epoch {epoch}", fontsize=11, fontweight="bold")
+    ax.grid(axis="x", color="#dddddd", linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#cccccc")
+
+    if fps:
+        sec = ax.secondary_xaxis("top", functions=(lambda x: x / fps, lambda t: t * fps))
+        sec.set_xlabel("Time (s)", fontsize=9)
+        sec.tick_params(labelsize=8)
+
+    # 一致率：只看至少有一邊是「非 Other 行為」的幀
+    m = np.isin(gt, show) | np.isin(pred, show)
+    agree = float(np.mean(gt[m] == pred[m])) * 100 if m.any() else 0.0
+    ax.annotate(f"frame agreement (non-Other): {agree:.1f}%",
+                xy=(0.99, 1.14), xycoords="axes fraction",
+                ha="right", fontsize=8, color="#666")
+
+    ax.legend(handles=[Patch(facecolor=C_PRED, label="Prediction"),
+                       Patch(facecolor=C_GT, label="Ground truth")],
+              loc="upper center", bbox_to_anchor=(0.5, -0.38),
+              ncol=2, fontsize=9, frameon=False)
+
+    fig.subplots_adjust(bottom=0.34, top=0.80, left=0.13, right=0.97)
+    out = os.path.join(tempfile.gettempdir(),
+                       f"val_eth_ep{epoch}_{os.path.splitext(vf)[0]}.png")
+    fig.savefig(out, facecolor="white", bbox_inches="tight")
+    plt.close(fig)
+    return out
+
+
 def refresh_threshold_epochs():
     """Populate the epoch dropdown from whatever epochs have val data."""
     eps = sorted((S.get("val_probs") or {}).keys())
@@ -1590,6 +1745,17 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                 "probs": np.asarray(apr_, dtype=np.float32),
                 "names": list(new_names),
             }
+            # val_loader 是 shuffle=False，所以 ap_ 的順序 == val_ds.samples 的順序。
+            # 存下每個視窗的 (影片, 幀索引, 預測) 就能把視窗預測攤回逐幀畫 ethogram。
+            try:
+                S.setdefault("val_windows", {})[ep+1] = {
+                    "samples": [(vp_, list(idx_)) for vp_, idx_, _ in val_ds.samples],
+                    "pred": np.asarray(ap_, dtype=np.int16),
+                    "names": list(new_names),
+                    "label_map": dict(label_map),
+                }
+            except Exception as e:
+                print(f"⚠️ Could not store val windows: {e}")
         yield html_progress(ep+1,n_epochs,total_win,total_win,"done",ws=ws),build_val_html(S["train_log"],new_names)
 
     with open(os.path.join(odir,"training_log.json"),"w") as f: json.dump(S["train_log"],f,indent=2)
@@ -1836,6 +2002,17 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                     thr_refresh=gr.Button("🔄 Refresh",size="sm")
                     thr_html=gr.Image(label="Precision / Recall vs threshold",
                                       show_label=False, container=False)
+                with gr.Tab("Ethogram"):
+                    gr.Markdown("<p style='font-size:13px;color:#555;'>驗證影片的 "
+                                "<b style='color:#E8B84B;'>prediction（黃，上）</b> vs "
+                                "<b style='color:#378ADD;'>ground truth（藍，下）</b>，排除 Other。</p>")
+                    with gr.Row():
+                        eth_epoch_dd=gr.Dropdown(label="Epoch",choices=[],value=None,
+                                                 interactive=True,scale=2)
+                        eth_vid_dd=gr.Dropdown(label="Validation video",choices=[],
+                                               value=None,interactive=True,scale=3)
+                    eth_refresh=gr.Button("🔄 Refresh",size="sm")
+                    eth_img=gr.Image(show_label=False, container=False)
 
     # ===== WIRING =====
 
@@ -1920,7 +2097,10 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                      *map_dds],
                     [progress_html,val_html]) \
              .then(refresh_threshold_epochs, None, [thr_epoch_dd]) \
-             .then(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
+             .then(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html]) \
+             .then(refresh_threshold_epochs, None, [eth_epoch_dd]) \
+             .then(list_val_videos, [eth_epoch_dd], [eth_vid_dd]) \
+             .then(build_val_ethogram, [eth_epoch_dd, eth_vid_dd], [eth_img])
     cancel_btn.click(cancel_training, [], [progress_html])
 
     # Threshold 分析：切換 epoch / 細度就重算
@@ -1928,5 +2108,13 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     thr_steps.change(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
     thr_refresh.click(refresh_threshold_epochs, None, [thr_epoch_dd]) \
                .then(build_threshold_table, [thr_epoch_dd, thr_steps], [thr_html])
+
+    # Val ethogram：選 epoch → 更新影片清單 → 畫圖
+    eth_epoch_dd.change(list_val_videos, [eth_epoch_dd], [eth_vid_dd]) \
+                .then(build_val_ethogram, [eth_epoch_dd, eth_vid_dd], [eth_img])
+    eth_vid_dd.change(build_val_ethogram, [eth_epoch_dd, eth_vid_dd], [eth_img])
+    eth_refresh.click(refresh_threshold_epochs, None, [eth_epoch_dd]) \
+               .then(list_val_videos, [eth_epoch_dd], [eth_vid_dd]) \
+               .then(build_val_ethogram, [eth_epoch_dd, eth_vid_dd], [eth_img])
 
 demo.launch(debug=True,share=True)
