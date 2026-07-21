@@ -923,7 +923,7 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
             else:
                 choices = build_mapping_choices_new(i, all_label_names, {})
                 default = choices[0]
-            dd_updates.append(gr.update(visible=True, choices=choices, value=default, label=all_label_names[i]))
+            dd_updates.append(gr.update(visible=False, choices=choices, value=default, label=all_label_names[i]))
         else:
             dd_updates.append(gr.update(visible=False, choices=[], value=None))
 
@@ -1217,6 +1217,9 @@ def _mapper_init_js(data_labels, head_mode, pretrained_names, dd_values):
         classes = keep or [n for n in data_labels
                            if n.lower() not in ("other", "others")]
 
+    # "Other" is a fixed box below, so never emit it as a normal class too
+    classes = [c for c in classes if c.lower() not in ("other", "others")]
+
     right = [{"name": c, "kind": "class"} for c in classes]
     right.append({"name": "Other", "kind": "other"})
     right.append({"name": "Exclude", "kind": "exclude"})
@@ -1229,17 +1232,26 @@ def _mapper_init_js(data_labels, head_mode, pretrained_names, dd_values):
         elif v == "→ Other":
             links[nm] = "__OTHER__"
         elif "merge into" in v:
-            links[nm] = v.replace("→ merge into ", "")
+            tgt = v.replace("→ merge into ", "")
+            links[nm] = "__OTHER__" if tgt.lower() in ("other", "others") else tgt
         elif "(keep)" in v or v == "keep":
-            links[nm] = nm
+            # an "Other (keep)" label belongs on the fixed Other box
+            links[nm] = "__OTHER__" if nm.lower() in ("other", "others") else nm
         elif v and v not in ("", "None"):
-            links[nm] = v
+            links[nm] = "__OTHER__" if v.lower() in ("other", "others") else v
         else:
             links[nm] = None
 
     cfg = {"left": list(data_labels), "right": right, "links": links,
            "mode": "pre" if locked else "new", "locked": locked}
-    return f"() => {{ if (window.lmInit) window.lmInit({_json.dumps(cfg)}); }}"
+    # Emit the config as an HTML block containing a <script>. Gradio re-renders
+    # this on every update, so the script runs again and re-seeds the widget.
+    # (A JS string + eval() was too fragile; this needs no parent-doc access.)
+    payload = _json.dumps(cfg).replace("</", "<\\/")
+    return ("<div style='display:none'>"
+            f"<script>(function(){{var c={payload};"
+            "var go=function(){if(window.lmInit){window.lmInit(c);}"
+            "else{setTimeout(go,120);}};go();})();</script></div>")
 
 
 def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
@@ -1276,7 +1288,13 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
         if tgt == "__EXCLUDE__":
             out.append(gr.update(value="→ Exclude")); continue
         if tgt == "__OTHER__":
-            out.append(gr.update(value="→ Other")); continue
+            # a label literally named "Other" keeps its own (keep) value in
+            # New head mode; anything else routes to the generic "→ Other"
+            if not is_pre and nm.lower() in ("other", "others"):
+                out.append(gr.update(value=f"{nm} (keep)"))
+            else:
+                out.append(gr.update(value="→ Other"))
+            continue
 
         if is_pre:
             out.append(gr.update(value=tgt if tgt in pretrained_names else "→ Other"))
@@ -1315,9 +1333,9 @@ def on_mapping_change(head_mode, *dd_vals):
                 choices, default = build_mapping_choices_pt(i, data_labels, pretrained_names)
                 current = cur_vals[i]
                 if current in choices:
-                    dd_updates.append(gr.update(choices=choices, value=current, label=data_labels[i]))
+                    dd_updates.append(gr.update(visible=False, choices=choices, value=current, label=data_labels[i]))
                 else:
-                    dd_updates.append(gr.update(choices=choices, value=default, label=data_labels[i]))
+                    dd_updates.append(gr.update(visible=False, choices=choices, value=default, label=data_labels[i]))
             else:
                 dd_updates.append(gr.update())
     else:
@@ -1333,9 +1351,9 @@ def on_mapping_change(head_mode, *dd_vals):
                 choices = build_mapping_choices_new(i, data_labels, mappings)
                 current = cur_vals[i]
                 if current in choices:
-                    dd_updates.append(gr.update(choices=choices, value=current))
+                    dd_updates.append(gr.update(visible=False, choices=choices, value=current))
                 else:
-                    dd_updates.append(gr.update(choices=choices, value=choices[0]))
+                    dd_updates.append(gr.update(visible=False, choices=choices, value=choices[0]))
             else:
                 dd_updates.append(gr.update())
 
@@ -2396,9 +2414,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         return _mapper_init_js(S["label_names"], head_mode,
                                S["cfg"]["class_names"] if S["cfg"] else [],
                                list(dd_vals))
-    lm_seed = gr.Textbox(visible=False)
-    lm_seed.change(None, lm_seed, None,
-                   js="(s) => { try{ eval('('+s+')')(); }catch(e){} }")
+    lm_seed = gr.HTML("")
 
     demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
                    ).then(_update_excluded_choices,
