@@ -1145,12 +1145,19 @@ MAPPER_JS = r"""
     }
     requestAnimationFrame(()=>draw());
     const unset=left.filter((n,i)=>links[i]===undefined);
-    document.getElementById("lm-hint").innerHTML=
-      (pending!==null?'<b style="color:var(--line-hi)">Selected "'+left[pending]
-        +'" — now click a box on the right</b><br>':'')
-      +(unset.length?'<span class="lm-warn">⚠ Not connected: '+unset.join(", ")
-        +' (treated as unassigned)</span>'
-        :'<span style="color:#2e7d32">✓ All labels mapped</span>');
+    const rightClasses=right.filter(r=>r.kind==="class").length;
+    let hint;
+    if(LOCKED && rightClasses===0){
+      hint='<span class="lm-warn">⚠ Pretrain head selected but no model loaded yet — '
+           +'load a pretrained model to see its classes.</span>';
+    } else {
+      hint=(pending!==null?'<b style="color:var(--line-hi)">Selected "'+left[pending]
+             +'" — now click a box on the right</b><br>':'')
+           +(unset.length?'<span class="lm-warn">⚠ Not connected: '+unset.join(", ")
+             +' (treated as unassigned)</span>'
+             :'<span style="color:#2e7d32">✓ All labels mapped</span>');
+    }
+    document.getElementById("lm-hint").innerHTML=hint;
     push();
   }
 
@@ -1220,8 +1227,12 @@ MAPPER_JS = r"""
 def _mapper_init_js(data_labels, head_mode, pretrained_names, dd_values):
     """Build the JS call that seeds the mapper from current dropdown state."""
     import json as _json
-    locked = (head_mode == "Pretrain head" and bool(pretrained_names))
-    if locked:
+    # Pretrain head always locks the right column (its classes come from the
+    # model, not the user). If the model isn't loaded yet there are no classes
+    # to show — still locked, so the user can't add bogus ones.
+    is_pre = (head_mode == "Pretrain head")
+    locked = is_pre
+    if is_pre:
         classes = [n for n in pretrained_names if n.lower() not in ("other", "others")]
     else:
         keep = []
