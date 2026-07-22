@@ -1032,7 +1032,8 @@ MAPPER_JS = r"""
     return el;
   }
   function push(){
-    const el=findBridge(); if(!el) return;
+    const el=findBridge();
+    if(!el){ console.warn("[lm] bridge textarea not found — mapping not sent"); return; }
     const nameOf=id=>(right.find(r=>r.id===id)||{}).name;
     const kindOf=id=>(right.find(r=>r.id===id)||{}).kind;
     const payload={mode:MODE,
@@ -1044,11 +1045,16 @@ MAPPER_JS = r"""
         : (kindOf(rid)==="other" ? "__OTHER__"
         : (kindOf(rid)==="exclude" ? "__EXCLUDE__" : nameOf(rid)));
     });
-    const setter=Object.getOwnPropertyDescriptor(
-      el.tagName==="TEXTAREA"?window.HTMLTextAreaElement.prototype
-                             :window.HTMLInputElement.prototype,"value").set;
-    setter.call(el, JSON.stringify(payload));
+    const proto = el.tagName==="TEXTAREA"
+      ? Object.getPrototypeOf(el)           // works across realms/iframes
+      : Object.getPrototypeOf(el);
+    const desc = Object.getOwnPropertyDescriptor(proto, "value")
+      || Object.getOwnPropertyDescriptor(
+           el.ownerDocument.defaultView.HTMLTextAreaElement.prototype, "value");
+    try { desc.set.call(el, JSON.stringify(payload)); }
+    catch(e){ el.value = JSON.stringify(payload); }
     el.dispatchEvent(new Event("input",{bubbles:true}));
+    el.dispatchEvent(new Event("change",{bubbles:true}));
   }
 
   function addNode(){
@@ -2145,6 +2151,12 @@ YELLOW_THEME = gr.themes.Soft(primary_hue=gr.themes.colors.amber, secondary_hue=
 # Global style overrides: black text, larger headings, stronger borders and
 # a slightly darker page background for contrast.
 CUSTOM_CSS = """
+/* keep the mapper bridge in the DOM but invisible (visible=False would drop
+   its <textarea>, breaking the JS bridge) */
+.lm-hidden{position:absolute!important;width:1px!important;height:1px!important;
+           padding:0!important;margin:-1px!important;overflow:hidden!important;
+           clip:rect(0 0 0 0)!important;border:0!important;opacity:0!important;
+           pointer-events:none!important}
 /* darker page background, blocks stay white -> stronger contrast */
 .gradio-container { background: #d8d4c4 !important; }
 .gr-box, .block, .form, .gr-panel, .gr-accordion,
@@ -2283,8 +2295,10 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 # stay the source of truth for the rest of the app — the mapper
                 # just writes into them through a hidden JSON bridge.
                 gr.HTML(MAPPER_HTML)
-                lm_bridge = gr.Textbox(elem_id="lm_bridge", visible=False)
-                lm_sync   = gr.Button("Apply mapping", visible=False)
+                # Bridge must stay in the DOM (not visible=False, which drops
+                # its <textarea> entirely) so the mapper JS can write into it.
+                lm_bridge = gr.Textbox(elem_id="lm_bridge",
+                                       elem_classes=["lm-hidden"])
 
                 # Pre-build MAX_LABELS dropdown slots (hidden — driven by the mapper)
                 map_dds = []
