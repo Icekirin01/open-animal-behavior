@@ -1284,6 +1284,17 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
     pretrained_names = S["cfg"]["class_names"] if S["cfg"] else []
     is_pre = (head_mode == "Pretrain head" and bool(pretrained_names))
 
+    # Data labels that are literally "Other" change how "route to Other" is
+    # expressed: when an Other class exists, New head has NO "→ Other" choice —
+    # you route there via "→ merge into Other" instead.
+    has_other = any(nm.lower() in ("other", "others") for nm in data_labels)
+    other_name = next((nm for nm in data_labels if nm.lower() in ("other", "others")), "Other")
+
+    def route_to_other():
+        if is_pre:
+            return "→ Other"                       # pretrain always has this
+        return "→ Other" if not has_other else f"→ merge into {other_name}"
+
     out = []
     for i in range(N):
         if i >= n:
@@ -1292,16 +1303,16 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
         tgt = links.get(nm)
 
         if tgt is None:
-            out.append(gr.update(value="→ Other")); continue
+            out.append(gr.update(value=route_to_other())); continue
         if tgt == "__EXCLUDE__":
             out.append(gr.update(value="→ Exclude")); continue
         if tgt == "__OTHER__":
             # a label literally named "Other" keeps its own (keep) value in
-            # New head mode; anything else routes to the generic "→ Other"
+            # New head mode; anything else routes to Other via the valid choice
             if not is_pre and nm.lower() in ("other", "others"):
                 out.append(gr.update(value=f"{nm} (keep)"))
             else:
-                out.append(gr.update(value="→ Other"))
+                out.append(gr.update(value=route_to_other()))
             continue
 
         if is_pre:
@@ -1313,7 +1324,7 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
                 out.append(gr.update(value=f"→ merge into {tgt}"))
             else:
                 # target no longer exists (box was deleted/renamed) — fall back
-                out.append(gr.update(value="→ Other"))
+                out.append(gr.update(value=route_to_other()))
     return tuple(out)
 
 
