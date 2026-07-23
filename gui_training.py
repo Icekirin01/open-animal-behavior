@@ -807,7 +807,7 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     empty = lambda msg: (msg,"","*Load data first*",
                          *[gr.update(visible=False,choices=[],value=None) for _ in range(N)],
                          gr.update(choices=[],value=None),
-                         None,"","",gr.update(maximum=0,value=0),S["_cursor_data"],"","")
+                         None,"","",gr.update(maximum=1,value=0),S["_cursor_data"],"","")
 
     if not vdir or not os.path.isdir(vdir): return empty(f"❌ Video dir not found")
     if not ldir or not os.path.isdir(ldir): return empty(f"❌ Label dir not found")
@@ -951,7 +951,7 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     status=f"✅ {len(matched)} matched (of {len(vfiles)} videos){fmt_str}"
 
     return (status, dist, nav_t, *dd_updates, vid_dd_update,
-            img, info, tl, gr.update(maximum=max(T-1,0),value=0), cdata, vid_list, summary)
+            img, info, tl, gr.update(maximum=max(T-1,1),value=0), cdata, vid_list, summary)
 
 
 MAPPER_HTML = r"""
@@ -1292,6 +1292,19 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
         return tuple(gr.update() for _ in range(N))
 
     links = payload.get("links", {})
+
+    # Safety: a payload that carries no usable links must be IGNORED, not
+    # applied. An empty/stale push (e.g. the mapper rendering before the scan
+    # populated its labels) would otherwise route every label to Other and
+    # silently destroy the whole class list.
+    if not isinstance(links, dict) or not links:
+        return tuple(gr.update() for _ in range(N))
+    known = [nm for nm in data_labels if nm in links]
+    if not known:
+        return tuple(gr.update() for _ in range(N))
+    if all(links.get(nm) is None for nm in known):
+        return tuple(gr.update() for _ in range(N))
+
     pretrained_names = S["cfg"]["class_names"] if S["cfg"] else []
     is_pre = (head_mode == "Pretrain head" and bool(pretrained_names))
 
@@ -1314,7 +1327,15 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
         tgt = links.get(nm)
 
         if tgt is None:
-            out.append(gr.update(value=route_to_other())); continue
+            # Not connected: keep the label as its own class rather than
+            # silently folding it into Other (which would delete the class).
+            if is_pre:
+                out.append(gr.update(value=route_to_other()))
+            elif nm.lower() in ("other", "others"):
+                out.append(gr.update(value=f"{nm} (keep)"))
+            else:
+                out.append(gr.update(value=f"{nm} (keep)"))
+            continue
         if tgt == "__EXCLUDE__":
             out.append(gr.update(value="→ Exclude")); continue
         if tgt == "__OTHER__":
@@ -1442,7 +1463,7 @@ def _preview_video_mapped(vf, head_mode, dd_vals):
     info = f"<div style='display:flex;justify-content:space-between;align-items:center;'><span style='padding:3px 10px;border-radius:6px;background:{bg};color:white;font-size:12px;font-weight:500;'>{nm0}</span><span style='font-size:12px;color:var(--color-text-secondary);'>F: 0 / {T} | 0.00s / {T/fps:.2f}s</span></div>"
 
     img = _get_frame(vf, 0)
-    return img, info, tl, gr.update(maximum=max(T-1,0),value=0), cdata
+    return img, info, tl, gr.update(maximum=max(T-1,1),value=0), cdata
 
 def on_scrub(fi, head_mode, *dd_vals):
     vf=S["cur_vf"]
@@ -2227,7 +2248,7 @@ def load_demo_training(repo, val_pct, val_seed, head_mode, *dd_vals):
     empty = lambda msg: (msg, "", "*Load data first*",
                          *[gr.update(visible=False, choices=[], value=None) for _ in range(N)],
                          gr.update(choices=[], value=None),
-                         None, "", "", gr.update(maximum=0, value=0), S["_cursor_data"], "", "")
+                         None, "", "", gr.update(maximum=1, value=0), S["_cursor_data"], "", "")
     if not repo:
         return empty("❌ Specify repo")
     try:
