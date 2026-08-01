@@ -2655,6 +2655,32 @@ def _cfg_card(msg, color="#555"):
             f"padding:8px 12px;font-size:13px;color:{color};'>{msg}</div>")
 
 
+def apply_pending_cfg_map(head_mode, *dd_vals):
+    """After a scan has built the map-dropdown choices, apply a label mapping
+    that was loaded from a config file (stashed in S["_pending_cfg_map"]). Only
+    applies if the config's labels match the freshly scanned labels. Returns
+    updates for all map dropdowns."""
+    N = MAX_LABELS
+    pend = S.get("_pending_cfg_map")
+    data_labels = S.get("label_names", [])
+    if not pend or pend.get("labels") != list(data_labels):
+        # labels differ (or nothing pending) → leave whatever the scan set
+        return tuple(gr.update() for _ in range(N))
+    vals = pend.get("values", [])
+    out = []
+    for i in range(N):
+        if i < len(vals) and vals[i] is not None:
+            out.append(gr.update(value=vals[i]))
+        else:
+            out.append(gr.update())
+    # also prime the mapper cache so training uses it even before re-seeding
+    S["_mapper_vals"] = {"labels": list(data_labels),
+                         "values": [vals[i] if i < len(vals) else None
+                                    for i in range(len(data_labels))]}
+    S["_pending_cfg_map"] = None   # consume once
+    return tuple(out)
+
+
 def load_training_config(load_path):
     """Read a config JSON and return updates for every input component, plus a
     status string. Order of returned updates MUST match the outputs list wired
@@ -2693,15 +2719,22 @@ def load_training_config(load_path):
         U(ag.get("blur")), U(ag.get("tdrop")), U(ag.get("mult")),
         gr.update(value=ag.get("excluded", [])),
     ]
-    # map dropdown values
+    # Label mapping: DON'T push values into the map dropdowns now — their
+    # choices are still empty (they're built during Load folder), and Gradio
+    # rejects a value that isn't in the choices. Stash the mapping and re-apply
+    # it after the scan builds the choices.
+    S["_pending_cfg_map"] = {
+        "labels": cfg.get("label_names", []),
+        "values": list(mv),
+    }
     for i in range(N):
-        if i < len(mv) and mv[i] is not None:
-            updates.append(gr.update(value=mv[i]))
-        else:
-            updates.append(gr.update())
+        updates.append(gr.update())   # leave map dropdowns untouched for now
 
+    note = ""
+    if mv:
+        note = "<br>Label mapping will be applied after you click <b>Load folder</b>."
     status = _cfg_card(f"✅ Loaded config from<br>{load_path.strip()}"
-                       "<br>Click <b>Load folder</b> to scan with these settings.",
+                       f"<br>Click <b>Load folder</b> to scan with these settings.{note}",
                        "#2e7d32")
     return (status, *updates)
 
@@ -2962,6 +2995,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
 
     # Load folder → scan user's own directories
     scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
+                 ).then(apply_pending_cfg_map, [head_mode_dd, *map_dds], map_dds
                  ).then(_update_excluded_choices,
                         [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
                  ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
