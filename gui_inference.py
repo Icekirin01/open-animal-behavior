@@ -308,17 +308,17 @@ def scan_videos_and_preview(vdir):
 
 # ====================== Pre-crop (YOLO) ======================
 
-def run_precrop(yolo_model_path, video_dir, crop_padding):
-    """Crop all videos in video_dir with the YOLO tracker, then switch the
-    active folder to the cropped output and preview the first cropped clip.
+def run_precrop(yolo_model_path, video_dir, crop_padding, drive_out_dir):
+    """Preprocess all videos in video_dir: cache original locally → YOLO-crop →
+    write cropped clip locally (used for inference) + mirror to Drive → delete
+    original cache. Then switch the active folder to the local cropped output.
 
     Yields (run_crop_btn, batch_prog, *7 preview outputs). The button is
-    disabled ("Cropping...") for the whole run so it can't be double-clicked,
-    and re-enabled on every exit path.
+    disabled for the whole run and re-enabled on every exit path.
     """
     hold = (U,) * 7  # video_dd, scan_st, frame_img, info_html, scrubber, timeline, cursor
-    BUSY = gr.update(value="⏳ Cropping...", interactive=False)
-    IDLE = gr.update(value="✂️ Run crop", interactive=True)
+    BUSY = gr.update(value="⏳ Processing...", interactive=False)
+    IDLE = gr.update(value="✂️ Run preprocess", interactive=True)
 
     def _err(m):
         return (f"<div style='background:#fff;border:1px solid #e0e0e0;border-radius:8px;"
@@ -337,35 +337,42 @@ def run_precrop(yolo_model_path, video_dir, crop_padding):
     except Exception:
         crop_padding = 0.3
 
+    # Local (fast) output that inference will read; Drive is the backup mirror.
+    local_out = os.path.join("/content", "oab_preprocessed")
+    drive_out = drive_out_dir.strip() if drive_out_dir else None
+
     out_dir, outputs = None, []
     try:
-        for ev in precrop.crop_folder(yolo_model_path, video_dir,
-                                      crop_padding=crop_padding, device=0):
+        for ev in precrop.preprocess_folder(
+                yolo_model_path, video_dir, local_out,
+                drive_out_dir=drive_out, crop_padding=crop_padding, device=0):
             if ev["type"] == "progress":
-                # outer bar = videos, inner bar = frames of the current video
+                phase = ev.get("phase", "crop")
+                title = "Caching" if phase == "cache" else "Cropping"
                 yield (BUSY,
                        html_progress(ev["vid_i"] - 1, ev["vid_n"], ev["video"],
                                      ev["frame"], ev["total"],
                                      elapsed=time.perf_counter() - t0,
-                                     title="Cropping", unit="frames",
-                                     show_rate=False, done_label="✅ Cropped"),
+                                     title=title, unit="frames",
+                                     show_rate=False, done_label="✅ Done"),
                        *hold)
             elif ev["type"] == "done":
                 out_dir, outputs = ev["output_dir"], ev["outputs"]
     except Exception as e:
-        yield IDLE, _err(f"❌ Crop failed: {e}"), *hold
+        yield IDLE, _err(f"❌ Preprocess failed: {e}"), *hold
         return
 
     if not outputs:
-        yield IDLE, _err("❌ No videos were cropped"), *hold
+        yield IDLE, _err("❌ No videos were processed"), *hold
         return
 
     n = len(outputs)
+    tail = f" · mirrored to {drive_out}" if drive_out else ""
     yield (BUSY,
-           html_progress(n, n, f"{n} video(s) → {out_dir}", 1, 1,
+           html_progress(n, n, f"{n} video(s) → {out_dir}{tail}", 1, 1,
                          elapsed=time.perf_counter() - t0,
-                         title="Cropping", unit="frames",
-                         show_rate=False, done_label="✅ Cropped"),
+                         title="Preprocess", unit="frames",
+                         show_rate=False, done_label="✅ Done"),
            *hold)
 
     # Switch active folder to the cropped output and preview it. Keep the
@@ -1090,7 +1097,10 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
                     value="/content/drive/MyDrive/squid/model/best.pt")
                 crop_pad_in = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, value=0.3,
                                         label="Crop padding")
-                run_crop_btn = gr.Button("✂️ Run crop", variant="primary")
+                precrop_drive_in = gr.Textbox(
+                    label="Preprocessed output dir (Drive backup)",
+                    value="/content/drive/MyDrive/squid/preprocessed")
+                run_crop_btn = gr.Button("✂️ Run preprocess", variant="primary")
 
         with gr.Column(scale=2, min_width=400):
             with gr.Group():
@@ -1168,7 +1178,7 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     precrop_toggle.change(lambda on: gr.update(visible=on), [precrop_toggle], [precrop_panel])
     run_crop_btn.click(
         run_precrop,
-        [yolo_model_in, vdir_in, crop_pad_in],
+        [yolo_model_in, vdir_in, crop_pad_in, precrop_drive_in],
         [run_crop_btn] + load_outputs,
     )
 

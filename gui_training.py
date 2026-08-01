@@ -9,6 +9,7 @@ MAX_LABELS = 15  # pre-built dropdown slots
 # ==================== END OF EDITS ====================
 
 import os, json, numpy as np, torch, torch.nn as nn, torch.optim as optim
+import precrop
 import gradio as gr, pandas as pd, random, shutil, time, traceback
 from PIL import Image, ImageFilter
 from torchvision.transforms import ToTensor
@@ -802,8 +803,20 @@ def cache_video_to_local(src_path, cache_dir=VIDEO_CACHE_DIR):
 
 # ====================== Data Scanning ======================
 
+def _resolve_video_dir(vdir, which="train"):
+    """If YOLO preprocess produced cropped clips, use them instead of the raw
+    Drive videos. which = "train" or "val"."""
+    pp = S.get("_pp_dirs") or {}
+    d = pp.get(which)
+    if d and os.path.isdir(d) and any(
+            f.lower().endswith((".mp4", ".avi", ".mov")) for f in os.listdir(d)):
+        return d
+    return vdir
+
+
 def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     N = MAX_LABELS
+    vdir = _resolve_video_dir(vdir, "train")
     empty = lambda msg: (msg,"","*Load data first*",
                          *[gr.update(visible=False,choices=[],value=None) for _ in range(N)],
                          gr.update(choices=[],value=None),
@@ -822,10 +835,19 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     matched=[]; all_label_names=None
     boris_count=0; onehot_count=0
 
+    import re as _re
     for vf in vfiles:
         base=os.path.splitext(vf)[0]; lp=None
+        # Cropped clips are named "<orig>_cropped_224x224"; strip that so they
+        # match the original label CSV named after <orig>.
+        base_orig=_re.sub(r"_cropped_\d+x\d+$", "", base)
+        cand_bases=[base, base_orig] if base_orig!=base else [base]
+        candidates=[]
+        for b in cand_bases:
+            candidates += [b, b.replace("-",""), b.replace("_",""),
+                           b.replace("-","_"), b.replace("_","-")]
         # Try exact match first, then flexible matching
-        for candidate in [base, base.replace("-",""), base.replace("_",""), base.replace("-","_"), base.replace("_","-")]:
+        for candidate in candidates:
             # Try candidate.csv
             fp=os.path.join(ldir, candidate+".csv")
             if os.path.exists(fp): lp=fp; break
@@ -1559,6 +1581,8 @@ def scan_val_folder(val_vdir, val_ldir):
 
     Uses the same flexible video↔CSV matching as the main scan so a val folder
     laid out like the training folder just works."""
+    import re as _re
+    val_vdir = _resolve_video_dir(val_vdir, "val")
     if not val_vdir or not os.path.isdir(val_vdir):
         return [], f"❌ Val video dir not found: {val_vdir}"
     if not val_ldir or not os.path.isdir(val_ldir):
@@ -1575,8 +1599,13 @@ def scan_val_folder(val_vdir, val_ldir):
     entries = []
     for vf in vfiles:
         base = os.path.splitext(vf)[0]; lp = None
-        for cand in [base, base.replace("-", ""), base.replace("_", ""),
-                     base.replace("-", "_"), base.replace("_", "-")]:
+        base_orig = _re.sub(r"_cropped_\d+x\d+$", "", base)
+        cbases = [base, base_orig] if base_orig != base else [base]
+        cands = []
+        for b in cbases:
+            cands += [b, b.replace("-", ""), b.replace("_", ""),
+                      b.replace("-", "_"), b.replace("_", "-")]
+        for cand in cands:
             fp = os.path.join(val_ldir, cand + ".csv")
             if os.path.exists(fp): lp = fp; break
             fp = os.path.join(val_ldir, cand + "_one_hot.csv")
@@ -1870,6 +1899,101 @@ def refresh_threshold_epochs():
 def cancel_training():
     S["_cancel_training"] = True
     return "<p style='color:#e74c3c;font-weight:600;'>⛔ Cancelling… will stop after current batch.</p>"
+
+def _pp_local_root():
+    return "/content/oab_preprocessed"
+
+
+def run_preprocess_training(yolo_path, vdir, drive_out, crop_padding,
+                            use_sep_val, val_vdir):
+    """Preprocess (YOLO pre-crop) the training videos — and the separate
+    validation videos too, if that option is on — into local train/val
+    subfolders (mirrored to Drive). Yields (pp_status, pp_btn) updates.
+
+    On success stores the new local dirs in S["_pp_dirs"] so training/scan can
+    repoint to the cropped clips.
+    """
+    BUSY = gr.update(value="⏳ Processing...", interactive=False)
+    IDLE = gr.update(value="✂️ Run preprocess", interactive=True)
+
+    def card(msg, color="#555"):
+        return (f"<div style='background:#fff;border:1px solid #e0e0e0;border-radius:8px;"
+                f"padding:10px 14px;font-size:13px;color:{color};'>{msg}</div>")
+
+    if not yolo_path:
+        yield card("❌ Enter the YOLO model path (.pt)", "#e74c3c"), IDLE; return
+    if not vdir or not os.path.isdir(vdir):
+        yield card("❌ Training video directory not found", "#e74c3c"), IDLE; return
+
+    root = _pp_local_root()
+    drive_root = drive_out.strip() if drive_out else None
+    try:
+        crop_padding = float(crop_padding)
+    except Exception:
+        crop_padding = 0.3
+
+    # (label, source video dir, local output subdir, drive output subdir)
+    jobs = [("train", vdir, os.path.join(root, "train"),
+             os.path.join(drive_root, "train") if drive_root else None)]
+    if use_sep_val:
+        if not val_vdir or not os.path.isdir(val_vdir):
+            yield card("❌ Separate-val is on but the val video dir is invalid", "#e74c3c"), IDLE
+            return
+        jobs.append(("val", val_vdir, os.path.join(root, "val"),
+                     os.path.join(drive_root, "val") if drive_root else None))
+
+    t0 = time.perf_counter()
+    pp_dirs = {}
+    try:
+        for label, src, local_out, drive_o in jobs:
+            for ev in precrop.preprocess_folder(
+                    yolo_path, src, local_out, drive_out_dir=drive_o,
+                    crop_padding=crop_padding, device=0):
+                if ev["type"] == "progress":
+                    phase = "Caching" if ev.get("phase") == "cache" else "Cropping"
+                    yield (html_cache_progress(
+                               ev["vid_i"] - 1, ev["vid_n"],
+                               f"[{label}] {ev['video']}  ({ev['frame']}/{ev['total']})",
+                               elapsed=time.perf_counter() - t0), BUSY)
+                elif ev["type"] == "done":
+                    pp_dirs[label] = ev["output_dir"]
+    except Exception as e:
+        yield card(f"❌ Preprocess failed: {e}", "#e74c3c"), IDLE
+        return
+
+    S["_pp_dirs"] = pp_dirs
+    msg = " · ".join(f"{k}: {v}" for k, v in pp_dirs.items())
+    mirror = f"<br>Mirrored to Drive: {drive_root}" if drive_root else ""
+    yield (card(f"✅ Preprocess done in {time.perf_counter()-t0:.0f}s<br>{msg}{mirror}"
+                "<br>Now click <b>Load folder</b> (or Start training) to use the cropped clips.",
+                "#2e7d32"), IDLE)
+
+
+def auto_preprocess_before_train(pp_enabled, yolo_path, vdir, drive_out,
+                                 crop_padding, use_sep_val, val_vdir):
+    """Run YOLO preprocess before training if the toggle is on. Skip-existing
+    makes this instant when preprocess was already done. Yields pp_status."""
+    if not pp_enabled:
+        yield gr.update()
+        return
+    last = None
+    for status, _btn in run_preprocess_training(
+            yolo_path, vdir, drive_out, crop_padding, use_sep_val, val_vdir):
+        last = status
+        yield status
+    if last is not None:
+        yield last
+
+
+def rescan_after_preprocess(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
+    """Re-scan so scan_data points at cropped clips (used after auto-preprocess
+    on Start training). Mirrors do_scan_and_preview's first output only."""
+    outs = do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals)
+    return outs
+
+
+# ==================== Training button glue ====================
+
 
 def run_training(repo,mname,vdir,ldir,odir,head_mode,
                  n_epochs,batch_sz,lr_str,val_pct,val_seed,train_seed,
@@ -2308,6 +2432,24 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
             demo_btn=gr.Button("🎯 Load Demo",variant="secondary",size="sm")
             scan_d=gr.Button("📂 Load folder",variant="secondary")
 
+            # ---- YOLO preprocess (pre-crop) ----
+            gr.Markdown("---")
+            pp_toggle=gr.Checkbox(label="✂️ Enable YOLO preprocess (pre-crop)", value=False)
+            with gr.Group(visible=False) as pp_grp:
+                pp_yolo_in=gr.Textbox(label="YOLO model path (.pt on Drive)",
+                    value="/content/drive/MyDrive/squid/model/best.pt")
+                pp_pad_in=gr.Slider(minimum=0.0,maximum=1.0,step=0.05,value=0.3,
+                    label="Crop padding")
+                pp_drive_in=gr.Textbox(label="Preprocessed output dir (Drive backup)",
+                    value="/content/drive/MyDrive/squid/preprocessed")
+                pp_btn=gr.Button("✂️ Run preprocess",variant="primary")
+                pp_status=gr.HTML("")
+                gr.Markdown("<p style='font-size:12px;color:#888;'>Cropped clips are "
+                            "written locally (used for training) and mirrored to Drive. "
+                            "Pressing Start training also runs this automatically if "
+                            "not done yet. When 'separate validation folder' is on, "
+                            "train and val are cropped into their own subfolders.</p>")
+
         # ===== CENTER =====
         with gr.Column(scale=2, min_width=400):
             with gr.Group():
@@ -2544,8 +2686,21 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     # reveal the inputs when "separate validation folder" is ticked
     sep_val_cb.change(lambda on: gr.update(visible=on), [sep_val_cb], [sep_val_grp])
 
-    # Training — pass head_mode + all mapping dropdowns instead of label_cb
-    train_btn.click(run_training,
+    # YOLO preprocess panel
+    pp_toggle.change(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp])
+    pp_btn.click(run_preprocess_training,
+                 [pp_yolo_in, vdir_in, pp_drive_in, pp_pad_in, sep_val_cb, val_vdir_in],
+                 [pp_status, pp_btn])
+
+    # Training — auto-preprocess (if enabled) → rescan onto cropped clips → train
+    train_btn.click(auto_preprocess_before_train,
+                    [pp_toggle, pp_yolo_in, vdir_in, pp_drive_in, pp_pad_in,
+                     sep_val_cb, val_vdir_in],
+                    [pp_status]) \
+             .then(rescan_after_preprocess,
+                   [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds],
+                   scan_outputs) \
+             .then(run_training,
                     [repo_in,model_dd,vdir_in,ldir_in,odir_in,head_mode_dd,
                      ep_in,bs_in,lr_in,vr_in,val_seed_in,train_seed_in,
                      nw_in,cache_local_cb,
