@@ -1,93 +1,149 @@
 """
-precrop.py — YOLO BoT-SORT pre-crop for the inference GUI.
+precrop.py — YOLO detect-and-crop preprocessing for the training / inference GUIs.
 
-Adapted from the Colab "Script 3" tracker-crop workflow. Detects the target
-with a YOLO model, tracks it across frames (BoT-SORT), smooths the crop box
-(EMA + speed clamp), then crops + upscales each frame to a fixed size and
-writes a new video per source clip.
+This is a faithful port of the user's proven Colab crop script (the one that
+does NOT run out of RAM). The important choices are copied verbatim because
+they are what keep memory flat across many long videos:
 
-Reading uses decord (same as the rest of the GUI); writing uses imageio /
-imageio-ffmpeg, which is far more reliable on Colab than cv2.VideoWriter's
-mp4v backend (that one silently produces a broken writer and can segfault the
-kernel). Only CROP_PADDING and the model path are exposed in the GUI;
-everything else uses the same defaults as the original script.
+  · Read frames with cv2.VideoCapture (streaming, one frame at a time). decord's
+    VideoReader caches decoded frames internally and OOMs on long clips.
+  · Write with cv2.VideoWriter (mp4v). Proven stable in the user's runs.
+  · Single-frame model.predict (NOT model.track / BoT-SORT) + a custom EMA
+    SmoothBox for temporal stability.
+  · Half precision when the GPU supports it (probed once).
+  · Per-video reset_tracker(): break every predictor reference, gc.collect(),
+    torch.cuda.empty_cache() + ipc_collect(). This is what stops fragmentation
+    from accumulating video-to-video.
+  · frame_log is dropped per video.
+
+The GUI wrapper adds: cache each source video to fast local disk first, write
+the cropped clip to a local output dir (used by training) AND mirror it to a
+Drive backup dir, skip already-done videos, delete the original local cache,
+and yield progress dicts the GUI renders in its shared progress card.
 """
 
-import os, glob, gc, shutil
+import os, glob, gc, shutil, time
 from pathlib import Path
 
 import numpy as np
-import cv2  # used only for resize (crop_and_upscale), not for read/write
 
-# ---- fixed defaults (same as the original Colab script) ----
-CONF_THRESHOLD = 0.5
-IMG_SIZE       = 640
+# ---- crop parameters (verbatim from the user's working script) ----
+CONF_THRESHOLD = 0.15
+IMG_SIZE       = 512
+CROP_PADDING   = 0.3
 OUTPUT_WIDTH   = 224
 OUTPUT_HEIGHT  = 224
 SMOOTH_ALPHA   = 0.08
 MAX_SPEED      = 15
-OUTPUT_SUBDIR  = "cropped"   # created under the source video folder
+MISS_TOLERANCE = 99999
+
+VIDEO_EXTS = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv')
 
 # Where original videos are copied before cropping (fast local SSD, not Drive).
-# Reading Drive frame-by-frame gets progressively slower; copying the whole
-# file once and reading locally avoids that. Cleared per-video after cropping.
 LOCAL_CACHE_DIR = "/content/oab_precrop_cache"
 
-VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
 
+# ====================== Smoothing + crop (verbatim) ======================
 
 class SmoothBox:
-    """EMA + speed limit so the crop box moves smoothly."""
-    def __init__(self, alpha=SMOOTH_ALPHA, max_speed=MAX_SPEED):
+    """EMA + speed clamp; when nothing is detected, reuse the last box so the
+    output stays frame-aligned with the source."""
+    def __init__(self, alpha=SMOOTH_ALPHA, max_speed=MAX_SPEED,
+                 miss_tolerance=MISS_TOLERANCE):
         self.alpha = alpha
         self.max_speed = max_speed
+        self.miss_tolerance = miss_tolerance
         self.smooth_box = None
         self.miss_count = 0
 
     def update(self, box):
         if box is None:
             self.miss_count += 1
-            if self.miss_count > 30:
+            if self.miss_count > self.miss_tolerance:
                 self.smooth_box = None
-            return self.smooth_box
+            return None if self.smooth_box is None else self.smooth_box.tolist()
+
         self.miss_count = 0
         new_box = np.array(box, dtype=np.float64)
+
         if self.smooth_box is None:
             self.smooth_box = new_box
             return self.smooth_box.tolist()
+
         diff = np.clip(new_box - self.smooth_box, -self.max_speed, self.max_speed)
         clamped = self.smooth_box + diff
         self.smooth_box = self.smooth_box * (1 - self.alpha) + clamped * self.alpha
         return self.smooth_box.tolist()
 
 
-def crop_and_upscale(frame, bbox, padding, out_w, out_h):
-    """Crop bbox (with padding), keep target aspect ratio, upscale to out_w x out_h."""
+def center_crop(frame, out_w, out_h, interp):
+    import cv2
+    h, w = frame.shape[:2]
+    s = min(h, w)
+    cy, cx = h // 2, w // 2
+    center = frame[cy - s // 2: cy + s // 2, cx - s // 2: cx + s // 2]
+    return cv2.resize(center, (out_w, out_h), interpolation=interp)
+
+
+def crop_and_upscale(frame, bbox, padding, out_w, out_h, interp):
+    import cv2
     h_frame, w_frame = frame.shape[:2]
     x1, y1, x2, y2 = bbox
+
     bw, bh = x2 - x1, y2 - y1
-    pad_x, pad_y = bw * padding, bh * padding
-    x1 -= pad_x; y1 -= pad_y; x2 += pad_x; y2 += pad_y
+    x1 -= bw * padding; x2 += bw * padding
+    y1 -= bh * padding; y2 += bh * padding
 
     target_ratio = out_w / out_h
     crop_w, crop_h = x2 - x1, y2 - y1
-    current_ratio = crop_w / max(crop_h, 1)
-    if current_ratio < target_ratio:
-        new_w = crop_h * target_ratio
-        d = new_w - crop_w
-        x1 -= d / 2; x2 += d / 2
+    if crop_w / max(crop_h, 1) < target_ratio:
+        diff = crop_h * target_ratio - crop_w
+        x1 -= diff / 2; x2 += diff / 2
     else:
-        new_h = crop_w / target_ratio
-        d = new_h - crop_h
-        y1 -= d / 2; y2 += d / 2
+        diff = crop_w / target_ratio - crop_h
+        y1 -= diff / 2; y2 += diff / 2
 
-    x1 = max(0, int(x1)); y1 = max(0, int(y1))
-    x2 = min(w_frame, int(x2)); y2 = min(h_frame, int(y2))
+    cw, ch = x2 - x1, y2 - y1
+    if cw <= w_frame:
+        if x1 < 0: x2 -= x1; x1 = 0
+        if x2 > w_frame: x1 -= (x2 - w_frame); x2 = w_frame
+    if ch <= h_frame:
+        if y1 < 0: y2 -= y1; y1 = 0
+        if y2 > h_frame: y1 -= (y2 - h_frame); y2 = h_frame
+
+    x1 = max(0, int(round(x1))); y1 = max(0, int(round(y1)))
+    x2 = min(w_frame, int(round(x2))); y2 = min(h_frame, int(round(y2)))
+
     if x2 <= x1 or y2 <= y1:
-        return cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
-    crop = frame[y1:y2, x1:x2]
-    return cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+        return center_crop(frame, out_w, out_h, interp)
 
+    crop = frame[y1:y2, x1:x2]
+    interp2 = interp if (crop.shape[1] >= out_w and crop.shape[0] >= out_h) \
+        else cv2.INTER_CUBIC
+    return cv2.resize(crop, (out_w, out_h), interpolation=interp2)
+
+
+def reset_tracker(model, use_cuda):
+    """Reset the predictor and release CUDA cache between videos. Break every
+    reference the predictor holds so GC can reclaim it (verbatim from the
+    working script — this is the key to flat memory)."""
+    import torch
+    p = getattr(model, 'predictor', None)
+    if p is not None:
+        for attr in ('trackers', 'results', 'batch', 'dataset', 'vid_writer'):
+            if hasattr(p, attr):
+                try:
+                    setattr(p, attr, None)
+                except Exception:
+                    pass
+    model.predictor = None
+    gc.collect()
+    if use_cuda:
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+
+# ====================== File discovery ======================
 
 def list_videos(video_dir):
     """List video files, including ones where Google Drive appended a copy
@@ -102,133 +158,6 @@ def list_videos(video_dir):
     return sorted(set(vids))
 
 
-def crop_folder(model_path, video_dir, crop_padding=0.3, output_dir=None, device=0):
-    """
-    Crop every video in ``video_dir`` and write results to ``output_dir``
-    (defaults to ``video_dir/cropped``).
-
-    ``device`` controls where YOLO runs. Default 0 = GPU. YOLO shares the GPU
-    with the behavior-recognition model already loaded by the GUI, so after
-    cropping finishes this function resets the tracker state and calls
-    ``torch.cuda.empty_cache()`` to hand VRAM back. If you hit CUDA OOM on a
-    small card, pass ``device="cpu"``.
-
-    Reads frames with decord, writes with imageio-ffmpeg.
-
-    This is a **generator**. It yields progress dicts while running and a
-    final ``done`` dict at the end:
-
-        {"type": "progress", "video": name, "vid_i": i, "vid_n": n,
-         "frame": f, "total": total}
-        {"type": "done", "output_dir": out_dir, "outputs": [paths...]}
-    """
-    from ultralytics import YOLO       # imported lazily so the GUI loads without it
-    from decord import VideoReader, cpu
-    import imageio
-
-    if not model_path or not os.path.isfile(model_path):
-        raise FileNotFoundError(f"YOLO model not found: {model_path}")
-    if not video_dir or not os.path.isdir(video_dir):
-        raise NotADirectoryError(f"Video folder not found: {video_dir}")
-
-    if output_dir is None:
-        output_dir = os.path.join(video_dir, OUTPUT_SUBDIR)
-    os.makedirs(output_dir, exist_ok=True)
-
-    model = YOLO(model_path)
-    videos = list_videos(video_dir)
-    outputs = []
-
-    try:
-        for vi, vid_path in enumerate(videos):
-            vid_name = Path(vid_path).stem
-
-            # ---- read with decord (same as the rest of the GUI) ----
-            try:
-                vr = VideoReader(vid_path, ctx=cpu(0))
-            except Exception:
-                continue
-            total_frames = len(vr)
-            fps = float(vr.get_avg_fps()) or 30.0
-
-            out_path = os.path.join(output_dir, f"{vid_name}_cropped_{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}.mp4")
-
-            # ---- write with imageio-ffmpeg (stable on Colab) ----
-            writer = imageio.get_writer(
-                out_path, fps=fps, codec="libx264",
-                quality=8, macro_block_size=None,  # allow 224x224 without padding
-            )
-
-            smoother = SmoothBox()
-            frame_idx = 0
-            try:
-                for frame_idx in range(total_frames):
-                    frame = vr[frame_idx].asnumpy()  # decord returns RGB
-
-                    # YOLO expects BGR-style ndarray input; it handles RGB ndarrays
-                    # fine, but tracking must run on the same colour space each call.
-                    results = model.track(
-                        frame, conf=CONF_THRESHOLD, imgsz=IMG_SIZE,
-                        persist=True, tracker="botsort.yaml",
-                        device=device, verbose=False,
-                    )
-                    best_box, best_conf = None, -1
-                    for r in results:
-                        boxes = r.boxes
-                        if boxes is not None and len(boxes) > 0:
-                            for i in range(len(boxes)):
-                                c = float(boxes.conf[i].cpu())
-                                if c > best_conf:
-                                    best_conf = c
-                                    best_box = boxes.xyxy[i].cpu().numpy().tolist()
-
-                    smooth_box = smoother.update(best_box)
-                    if smooth_box is not None:
-                        out_frame = crop_and_upscale(frame, smooth_box, crop_padding,
-                                                     OUTPUT_WIDTH, OUTPUT_HEIGHT)
-                    else:
-                        out_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT),
-                                               interpolation=cv2.INTER_LANCZOS4)
-                    writer.append_data(out_frame)  # RGB in, RGB out
-
-                    if (frame_idx + 1) % 25 == 0:
-                        yield {"type": "progress", "video": vid_name,
-                               "vid_i": vi + 1, "vid_n": len(videos),
-                               "frame": frame_idx + 1, "total": total_frames}
-            finally:
-                writer.close()
-                del vr
-
-            outputs.append(out_path)
-
-            # ---- clear BoT-SORT tracker state so it doesn't carry into the
-            #      next video / accumulate; also drop cached frames ----
-            try:
-                model.predictor.trackers[0].reset()
-            except Exception:
-                # fall back: drop the predictor so a fresh tracker is built next call
-                model.predictor = None
-            gc.collect()
-
-            yield {"type": "progress", "video": vid_name,
-                   "vid_i": vi + 1, "vid_n": len(videos),
-                   "frame": total_frames, "total": total_frames}
-    finally:
-        # ---- release YOLO + free GPU so the behavior model gets its VRAM back ----
-        del model
-        gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-
-    yield {"type": "done", "output_dir": output_dir, "outputs": outputs}
-
-
-# ====================== Cache + orchestrated preprocess ======================
-
 def cache_video_to_local(src_path, cache_dir=LOCAL_CACHE_DIR):
     """Copy src_path to a fast local dir and return the local path. If a
     same-sized copy already exists, reuse it. Falls back to the source path on
@@ -242,7 +171,7 @@ def cache_video_to_local(src_path, cache_dir=LOCAL_CACHE_DIR):
                     return dst
             except Exception:
                 pass
-        shutil.copy2(src_path, dst)
+        shutil.copyfile(src_path, dst)
         return dst
     except Exception as e:
         print(f"⚠️ cache failed for {src_path}: {e}; using original path")
@@ -253,29 +182,60 @@ def _cropped_name(vid_path):
     return f"{Path(vid_path).stem}_cropped_{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}.mp4"
 
 
+# ====================== Model loading ======================
+
+def _load_model(model_path):
+    """Load YOLO, decide device + precision. Returns (model, device, use_cuda,
+    precision_kw). Mirrors the working script's probe."""
+    from ultralytics import YOLO
+    import torch
+
+    use_cuda = torch.cuda.is_available()
+    device = 0 if use_cuda else 'cpu'
+    model = YOLO(model_path)
+
+    precision_kw = {}
+    if use_cuda:
+        probe = np.zeros((64, 64, 3), dtype=np.uint8)
+        for kw in ({'quantize': 'half'}, {'half': True}):
+            try:
+                model.predict(probe, imgsz=IMG_SIZE, device=device,
+                              verbose=False, **kw)
+                precision_kw = kw
+                break
+            except (TypeError, ValueError):
+                continue
+        model.predictor = None
+        gc.collect(); torch.cuda.empty_cache()
+    return model, device, use_cuda, precision_kw
+
+
+# ====================== Orchestrated preprocess ======================
+
 def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
-                      crop_padding=0.3, device=0, skip_existing=True,
+                      crop_padding=CROP_PADDING, device=None, skip_existing=True,
                       delete_source_cache=True):
-    """Full preprocess: for every video in ``video_dir``
+    """Full preprocess for every video in ``video_dir``:
 
         1. copy the original to fast local storage (avoids Drive slowdown),
-        2. YOLO-crop it (skips if the output already exists),
+        2. YOLO detect-and-crop it (single-frame predict + EMA smoothing),
         3. write the cropped clip to ``local_out_dir`` (used by training) AND
            mirror it to ``drive_out_dir`` (persistent backup, if given),
         4. delete the original local copy to save space.
 
-    Cropped clips are kept; only the *original* local copies are deleted.
+    Reads with cv2.VideoCapture and writes with cv2.VideoWriter, resetting the
+    predictor and clearing CUDA cache per video — the memory pattern from the
+    user's proven script. ``device`` is ignored (kept for signature
+    compatibility); the device is chosen automatically.
 
-    Generator yielding the same progress dicts as ``crop_folder`` plus a final
-    ``done`` dict with the local output dir:
+    Generator yielding progress dicts + a final done dict:
 
         {"type": "progress", "phase": "cache"|"crop", "video": name,
          "vid_i": i, "vid_n": n, "frame": f, "total": total}
         {"type": "done", "output_dir": local_out_dir, "outputs": [...]}
     """
-    from ultralytics import YOLO
-    from decord import VideoReader, cpu
-    import imageio
+    import cv2
+    import psutil
 
     if not model_path or not os.path.isfile(model_path):
         raise FileNotFoundError(f"YOLO model not found: {model_path}")
@@ -286,19 +246,26 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
     if drive_out_dir:
         os.makedirs(drive_out_dir, exist_ok=True)
 
+    # OpenCV decode/resize should use all cores (Colab sometimes defaults to 1).
+    try:
+        cv2.setNumThreads(max(1, psutil.cpu_count(logical=True)))
+    except Exception:
+        pass
+    interp = cv2.INTER_AREA
+
     videos = list_videos(video_dir)
     n = len(videos)
     outputs = []
-    model = None
+    model = use_cuda = precision_kw = dev = None
 
     try:
         for vi, src_path in enumerate(videos):
-            vid_name = Path(src_path).stem
             out_name = _cropped_name(src_path)
+            vid_name = Path(src_path).stem
             local_out = os.path.join(local_out_dir, out_name)
             drive_out = os.path.join(drive_out_dir, out_name) if drive_out_dir else None
 
-            # ---- skip if already cropped (both copies present if Drive used) ----
+            # ---- skip if already cropped ----
             if skip_existing and os.path.exists(local_out) and \
                (drive_out is None or os.path.exists(drive_out)):
                 outputs.append(local_out)
@@ -312,68 +279,74 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
                    "vid_i": vi + 1, "vid_n": n, "frame": 0, "total": 1}
             local_src = cache_video_to_local(src_path)
 
-            # lazy-load YOLO only when we actually have work to do
+            # lazy-load YOLO only when there is real work
             if model is None:
-                model = YOLO(model_path)
+                model, dev, use_cuda, precision_kw = _load_model(model_path)
 
-            # ---- 2. crop the local copy ----
-            try:
-                vr = VideoReader(local_src, ctx=cpu(0))
-            except Exception as e:
-                print(f"⚠️ Skipped {vid_name}: {e}")
+            # ---- 2. crop the local copy (cv2 read + cv2 write) ----
+            cap = cv2.VideoCapture(local_src)
+            if not cap.isOpened():
+                print(f"⚠️ Cannot open: {local_src}")
                 continue
-            total_frames = len(vr)
-            fps = float(vr.get_avg_fps()) or 30.0
 
-            writer = imageio.get_writer(local_out, fps=fps, codec="libx264",
-                                        quality=8, macro_block_size=None)
-            smoother = SmoothBox()
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if not fps or fps <= 0 or np.isnan(fps):
+                fps = 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            writer = cv2.VideoWriter(local_out, cv2.VideoWriter_fourcc(*'mp4v'),
+                                     fps, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
+
+            reset_tracker(model, use_cuda)
+            smoother = SmoothBox(SMOOTH_ALPHA, MAX_SPEED, MISS_TOLERANCE)
+            frame_idx = 0
+
             try:
-                for frame_idx in range(total_frames):
-                    frame = vr[frame_idx].asnumpy()
-                    results = model.track(frame, conf=CONF_THRESHOLD, imgsz=IMG_SIZE,
-                                          persist=True, tracker="botsort.yaml",
-                                          device=device, verbose=False)
-                    best_box, best_conf = None, -1
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+
+                    results = model.predict(frame, conf=CONF_THRESHOLD,
+                                            imgsz=IMG_SIZE, device=dev,
+                                            verbose=False, **precision_kw)
+                    best_box, best_conf = None, -1.0
                     for r in results:
-                        boxes = r.boxes
-                        if boxes is not None and len(boxes) > 0:
-                            for i in range(len(boxes)):
-                                c = float(boxes.conf[i].cpu())
-                                if c > best_conf:
-                                    best_conf = c
-                                    best_box = boxes.xyxy[i].cpu().numpy().tolist()
+                        b = r.boxes
+                        if b is None or len(b) == 0:
+                            continue
+                        for j in range(len(b)):
+                            c = float(b.conf[j].cpu())
+                            if c > best_conf:
+                                best_conf = c
+                                best_box = b.xyxy[j].cpu().numpy().tolist()
+
                     smooth_box = smoother.update(best_box)
                     if smooth_box is not None:
-                        out_frame = crop_and_upscale(frame, smooth_box, crop_padding,
-                                                     OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                        cropped = crop_and_upscale(frame, smooth_box, crop_padding,
+                                                   OUTPUT_WIDTH, OUTPUT_HEIGHT, interp)
                     else:
-                        out_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT),
-                                               interpolation=cv2.INTER_LANCZOS4)
-                    writer.append_data(out_frame)
-                    if (frame_idx + 1) % 25 == 0:
+                        cropped = center_crop(frame, OUTPUT_WIDTH, OUTPUT_HEIGHT, interp)
+                    writer.write(cropped)
+
+                    frame_idx += 1
+                    if frame_idx % 25 == 0:
                         yield {"type": "progress", "phase": "crop", "video": vid_name,
                                "vid_i": vi + 1, "vid_n": n,
-                               "frame": frame_idx + 1, "total": total_frames}
+                               "frame": frame_idx,
+                               "total": total_frames if total_frames > 0 else frame_idx}
             finally:
-                writer.close()
-                del vr
+                cap.release()
+                writer.release()
 
-            # reset tracker state between videos
-            try:
-                model.predictor.trackers[0].reset()
-            except Exception:
-                model.predictor = None
-            gc.collect()
+            outputs.append(local_out)
 
             # ---- 3. mirror to Drive ----
             if drive_out:
                 try:
-                    shutil.copy2(local_out, drive_out)
+                    shutil.copyfile(local_out, drive_out)
                 except Exception as e:
                     print(f"⚠️ Could not mirror {out_name} to Drive: {e}")
-
-            outputs.append(local_out)
 
             # ---- 4. delete the original local copy (keep the cropped one) ----
             if delete_source_cache and local_src != src_path and os.path.exists(local_src):
@@ -382,9 +355,13 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
                 except Exception:
                     pass
 
+            # per-video cleanup (flat memory)
+            reset_tracker(model, use_cuda)
+
             yield {"type": "progress", "phase": "crop", "video": vid_name,
                    "vid_i": vi + 1, "vid_n": n,
-                   "frame": total_frames, "total": total_frames}
+                   "frame": total_frames if total_frames > 0 else frame_idx,
+                   "total": total_frames if total_frames > 0 else frame_idx}
     finally:
         if model is not None:
             del model
@@ -393,6 +370,7 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
         except Exception:
             pass
 
