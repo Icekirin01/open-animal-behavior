@@ -541,6 +541,9 @@ def load_pretrained(repo, mname):
 def compute_split(val_pct, seed=1337):
     if not S["scan_data"]: S["split_indices"]={"train":[],"val":[]}; return
     data=S["scan_data"]; n=len(data); val_ratio=val_pct/100.0
+    # Separate val folder active → train folder is ALL training, no ratio split.
+    if S.get("_sep_val_active"):
+        S["split_indices"]={"train":list(range(n)),"val":[]}; return
     if val_ratio>0 and n>=4: tidx,vidx=train_test_split(list(range(n)),test_size=val_ratio,random_state=int(seed))
     elif val_ratio>0 and n>=2: vidx=[n-1]; tidx=list(range(n-1))
     else: tidx=list(range(n)); vidx=[]
@@ -562,7 +565,24 @@ def build_video_list_html(active_vf=None):
         html+=f"<div style='{bg}border-radius:4px;padding:4px 8px;margin-bottom:1px;'><div style='display:flex;justify-content:space-between;align-items:center;'><span style='font-size:12px;color:{nc};font-weight:{nw};'>{vf}{fmt_tag}{role_tag}</span><span style='font-size:10px;color:var(--color-text-secondary);white-space:nowrap;'>{T} fr · {dur:.1f}s</span></div></div>"
     html+="</div>"
     nt=len(tidx_set); nv=len(vidx_set)
-    html+=f"<div style='display:flex;gap:14px;margin-top:4px;font-size:11px;color:var(--color-text-secondary);'><span><span style='display:inline-block;width:8px;height:8px;border-radius:2px;background:#D1FAE5;border:1px solid #065F46;vertical-align:middle;margin-right:3px;'></span>Train: {nt}</span><span><span style='display:inline-block;width:8px;height:8px;border-radius:2px;background:#FEF3C7;border:1px solid #92400E;vertical-align:middle;margin-right:3px;'></span>Val: {nv}</span><span>Total: {len(data)}</span></div>"
+
+    # Separate val folder: those videos aren't in scan_data, so append them
+    # explicitly as VAL rows below the training list.
+    sep_val = S.get("_val_preview") if S.get("_sep_val_active") else None
+    if sep_val:
+        html2="<div style='max-height:160px;overflow-y:auto;border:1px solid var(--color-border-secondary);border-radius:8px;padding:4px;margin-top:6px;'>"
+        for d in sep_val:
+            vf=d["vf"]; T=d["T"]; fps=d["fps"]; dur=T/fps if fps>0 else 0
+            role_tag="<span style='font-size:10px;padding:1px 5px;border-radius:3px;background:#FEF3C7;color:#92400E;font-weight:600;margin-left:6px;'>VAL</span>"
+            html2+=f"<div style='border-radius:4px;padding:4px 8px;margin-bottom:1px;'><div style='display:flex;justify-content:space-between;align-items:center;'><span style='font-size:12px;color:var(--color-text-primary);font-weight:500;'>{vf}{role_tag}</span><span style='font-size:10px;color:var(--color-text-secondary);white-space:nowrap;'>{T} fr · {dur:.1f}s</span></div></div>"
+        html2+="</div>"
+        html = ("<div style='font-size:11px;font-weight:600;color:#065F46;margin-bottom:2px;'>Training folder</div>"
+                + html
+                + "<div style='font-size:11px;font-weight:600;color:#92400E;margin:6px 0 2px;'>Validation folder (separate)</div>"
+                + html2)
+        nv = len(sep_val)
+
+    html+=f"<div style='display:flex;gap:14px;margin-top:4px;font-size:11px;color:var(--color-text-secondary);'><span><span style='display:inline-block;width:8px;height:8px;border-radius:2px;background:#D1FAE5;border:1px solid #065F46;vertical-align:middle;margin-right:3px;'></span>Train: {nt}</span><span><span style='display:inline-block;width:8px;height:8px;border-radius:2px;background:#FEF3C7;border:1px solid #92400E;vertical-align:middle;margin-right:3px;'></span>Val: {nv}</span><span>Total: {len(data)+ (nv if sep_val else 0)}</span></div>"
     return html
 
 # ====================== Label Mapping Logic ======================
@@ -887,16 +907,22 @@ def _match_label(stem, ldir, csv_files):
 def load_and_report_val(cur_status, sep_on, val_vdir, val_ldir, ldir):
     """After the main (train) scan, also scan the separate validation folder
     (if enabled) and append its result to the status line, so the user can see
-    val actually loaded rather than only finding out at training time."""
+    val actually loaded rather than only finding out at training time. Also
+    updates the middle video list to show train vs val correctly."""
+    S["_sep_val_active"] = bool(sep_on)
     if not sep_on:
-        return cur_status
+        S["_val_preview"] = None
+        # recompute split so the list reverts to ratio-based train/val
+        return cur_status, build_video_list_html()
     eff_val_ldir = val_ldir if val_ldir else ldir
     entries, msg = scan_val_folder(val_vdir, eff_val_ldir)
-    S["_val_preview"] = entries  # cached; run_training re-scans anyway
+    S["_val_preview"] = entries
+    # with separate val active, the whole train folder is TRAIN
+    compute_split(0)
     base = cur_status or ""
     tag = (f" · Val: {len(entries)} matched" if entries
            else f" · Val: {msg}")
-    return base + tag
+    return base + tag, build_video_list_html()
 
 
 def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
@@ -2696,7 +2722,8 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                         [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
                  ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
                  ).then(load_and_report_val,
-                        [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in], scan_st)
+                        [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in],
+                        [scan_st, vid_list_html])
 
     # Head mode change → rebuild all mapping dropdowns + timeline + summary
     map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
@@ -2740,7 +2767,12 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                    [frame_img,info_html,timeline_html,scrubber,cursor_state,nav_md,vid_list_html])
 
     # reveal the inputs when "separate validation folder" is ticked
-    sep_val_cb.change(lambda on: gr.update(visible=on), [sep_val_cb], [sep_val_grp])
+    def _on_sep_toggle(on):
+        S["_sep_val_active"] = bool(on)
+        if not on:
+            S["_val_preview"] = None
+        return gr.update(visible=on), build_video_list_html(active_vf=S.get("cur_vf"))
+    sep_val_cb.change(_on_sep_toggle, [sep_val_cb], [sep_val_grp, vid_list_html])
 
     # YOLO preprocess panel
     pp_toggle.change(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp])
