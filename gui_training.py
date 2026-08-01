@@ -2547,12 +2547,41 @@ CUSTOM_CSS = """
 .gr-box, .block, .form, .gr-panel, .gr-accordion,
 .gradio-container .prose { background: #ffffff !important; }
 
-/* force black text (overrides Gradio grey secondary/tertiary vars) */
-.gradio-container, .gradio-container * {
+/* force black text (overrides Gradio grey secondary/tertiary vars) — but NOT
+   on form controls, which get their own white-bg + black-text rule below */
+.gradio-container, .gradio-container *:not(input):not(textarea):not(select) {
     color: #000000 !important;
     --color-text-primary: #000000;
     --color-text-secondary: #000000;
     --color-text-tertiary: #000000;
+}
+
+/* Inputs: force WHITE background + black text. The Soft theme pairs light text
+   with a dark field fill; forcing only the text to black (above) left dark
+   fields with black text = unreadable black boxes. Override the theme fill. */
+.gradio-container {
+    --input-background-fill: #ffffff !important;
+    --input-background-fill-focus: #ffffff !important;
+    --block-background-fill: #ffffff !important;
+    --border-color-primary: #555555 !important;
+}
+.gradio-container input,
+.gradio-container textarea,
+.gradio-container select,
+.gradio-container input[type="text"],
+.gradio-container input[type="number"],
+.gradio-container [data-testid="textbox"],
+.gradio-container [data-testid="number-input"],
+.gradio-container .wrap,
+.gradio-container [class*="dropdown"] [class*="wrap"],
+.gradio-container [class*="dropdown"] input {
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    color: #000000 !important;
+}
+.gradio-container input::placeholder,
+.gradio-container textarea::placeholder {
+    color: #888888 !important;
 }
 
 /* Border strategy: do NOT outline every .block / .form (that
@@ -2661,15 +2690,16 @@ def _cfg_card(msg, color="#555"):
 
 def apply_pending_cfg_map(head_mode, *dd_vals):
     """After a scan has built the map-dropdown choices, apply a label mapping
-    that was loaded from a config file (stashed in S["_pending_cfg_map"]). Only
-    applies if the config's labels match the freshly scanned labels. Returns
-    updates for all map dropdowns."""
+    (and head mode) that was loaded from a config file (stashed in
+    S["_pending_cfg_map"]). Only applies if the config's labels match the
+    freshly scanned labels. Returns (head_mode_update, *map_dd_updates)."""
     N = MAX_LABELS
     pend = S.get("_pending_cfg_map")
     data_labels = S.get("label_names", [])
     if not pend or pend.get("labels") != list(data_labels):
-        # labels differ (or nothing pending) → leave whatever the scan set
-        return tuple(gr.update() for _ in range(N))
+        return (gr.update(), *[gr.update() for _ in range(N)])
+    hm = pend.get("head_mode")
+    hm_update = gr.update(value=hm) if hm else gr.update()
     vals = pend.get("values", [])
     out = []
     for i in range(N):
@@ -2677,12 +2707,11 @@ def apply_pending_cfg_map(head_mode, *dd_vals):
             out.append(gr.update(value=vals[i]))
         else:
             out.append(gr.update())
-    # also prime the mapper cache so training uses it even before re-seeding
     S["_mapper_vals"] = {"labels": list(data_labels),
                          "values": [vals[i] if i < len(vals) else None
                                     for i in range(len(data_labels))]}
-    S["_pending_cfg_map"] = None   # consume once
-    return tuple(out)
+    S["_pending_cfg_map"] = None
+    return (hm_update, *out)
 
 
 def load_training_config(load_path):
@@ -2711,7 +2740,7 @@ def load_training_config(load_path):
         return gr.update(value=v) if v is not None else gr.update()
 
     updates = [
-        U(cfg.get("head_mode")),
+        gr.update(),  # head_mode applied later via apply_pending_cfg_map (avoids cascade)
         U(p.get("vdir")), U(p.get("ldir")), U(p.get("odir")),
         U(p.get("sep_val")), U(p.get("val_vdir")), U(p.get("val_ldir")),
         U(pp.get("enabled")), U(pp.get("yolo")), U(pp.get("padding")), U(pp.get("drive_out")),
@@ -2723,13 +2752,14 @@ def load_training_config(load_path):
         U(ag.get("blur")), U(ag.get("tdrop")), U(ag.get("mult")),
         gr.update(value=ag.get("excluded", [])),
     ]
-    # Label mapping: DON'T push values into the map dropdowns now — their
-    # choices are still empty (they're built during Load folder), and Gradio
-    # rejects a value that isn't in the choices. Stash the mapping and re-apply
-    # it after the scan builds the choices.
+    # Label mapping + head mode: DON'T push into the dropdowns now — the map
+    # dropdowns' choices are still empty (built during Load folder), and setting
+    # head_mode here triggers a cascade of change events that can loop. Stash
+    # both and apply after the scan builds the choices.
     S["_pending_cfg_map"] = {
         "labels": cfg.get("label_names", []),
         "values": list(mv),
+        "head_mode": cfg.get("head_mode"),
     }
     for i in range(N):
         updates.append(gr.update())   # leave map dropdowns untouched for now
@@ -2999,7 +3029,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
 
     # Load folder → scan user's own directories
     scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
-                 ).then(apply_pending_cfg_map, [head_mode_dd, *map_dds], map_dds
+                 ).then(apply_pending_cfg_map, [head_mode_dd, *map_dds], [head_mode_dd, *map_dds]
                  ).then(_update_excluded_choices,
                         [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
                  ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
@@ -3146,4 +3176,17 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                .then(list_val_videos, [eth_epoch_dd], [eth_vid_dd]) \
                .then(build_val_ethogram, [eth_epoch_dd, eth_vid_dd], [eth_img])
 
-demo.launch(debug=True,share=True)
+    # Force LIGHT mode. Gradio otherwise follows the browser's dark-mode
+    # setting, which renders the Soft theme's input/status fields dark navy —
+    # that's why the white boxes "suddenly" turned dark. This pins it to light.
+    demo.load(None, None, None, js="""
+      () => {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('__theme') !== 'light') {
+          url.searchParams.set('__theme', 'light');
+          window.location.replace(url.href);
+        }
+      }
+    """)
+
+demo.launch(debug=True, share=True)
