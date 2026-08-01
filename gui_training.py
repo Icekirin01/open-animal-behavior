@@ -814,6 +814,50 @@ def _resolve_video_dir(vdir, which="train"):
     return vdir
 
 
+def _strip_suffixes(stem):
+    """Return candidate original stems by removing noise that Drive / cropping
+    add to filenames, so a video still matches its label CSV. Handles:
+      · YOLO crop suffix   "..._cropped_224x224"
+      · Google Drive copies "... 的副本", "...的副本", "... - 副本",
+                            "... copy", "... - Copy", "...(1)"
+    Returns a list, most-specific first, always including the original stem."""
+    import re as _re
+    out = [stem]
+    s = stem
+    patterns = [
+        r"_cropped_\d+x\d+$",                       # YOLO crop suffix
+        r"\s*的副本$", r"\s*-\s*副本$", r"\s*副本$",   # Drive copy (zh)
+        r"\s*-?\s*[Cc]opy$", r"\s*-?\s*copy\s*\d*$", # Drive copy (en)
+        r"\s*\(\d+\)$", r"\s*—\s*副本$",             # "(1)", em-dash 副本
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for p in patterns:
+            ns = _re.sub(p, "", s)
+            if ns != s:
+                s = ns; changed = True
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def _match_label(stem, ldir, csv_files):
+    """Find the label CSV for a video stem, tolerant of crop/copy suffixes and
+    -/_ variations. csv_files maps lowercased-stem -> full path."""
+    import os as _os
+    for b in _strip_suffixes(stem):
+        for cand in [b, b.replace("-", ""), b.replace("_", ""),
+                     b.replace("-", "_"), b.replace("_", "-"),
+                     b.strip()]:
+            fp = _os.path.join(ldir, cand + ".csv")
+            if _os.path.exists(fp): return fp
+            fp = _os.path.join(ldir, cand + "_one_hot.csv")
+            if _os.path.exists(fp): return fp
+            if cand.lower() in csv_files: return csv_files[cand.lower()]
+    return None
+
+
 def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     N = MAX_LABELS
     vdir = _resolve_video_dir(vdir, "train")
@@ -835,28 +879,9 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     matched=[]; all_label_names=None
     boris_count=0; onehot_count=0
 
-    import re as _re
     for vf in vfiles:
-        base=os.path.splitext(vf)[0]; lp=None
-        # Cropped clips are named "<orig>_cropped_224x224"; strip that so they
-        # match the original label CSV named after <orig>.
-        base_orig=_re.sub(r"_cropped_\d+x\d+$", "", base)
-        cand_bases=[base, base_orig] if base_orig!=base else [base]
-        candidates=[]
-        for b in cand_bases:
-            candidates += [b, b.replace("-",""), b.replace("_",""),
-                           b.replace("-","_"), b.replace("_","-")]
-        # Try exact match first, then flexible matching
-        for candidate in candidates:
-            # Try candidate.csv
-            fp=os.path.join(ldir, candidate+".csv")
-            if os.path.exists(fp): lp=fp; break
-            # Try candidate_one_hot.csv
-            fp=os.path.join(ldir, candidate+"_one_hot.csv")
-            if os.path.exists(fp): lp=fp; break
-            # Try case-insensitive lookup
-            if candidate.lower() in csv_files:
-                lp=csv_files[candidate.lower()]; break
+        base=os.path.splitext(vf)[0]
+        lp=_match_label(base, ldir, csv_files)
         if lp is None: continue
         vp = os.path.join(vdir, vf)
         try:
@@ -1598,20 +1623,8 @@ def scan_val_folder(val_vdir, val_ldir):
 
     entries = []
     for vf in vfiles:
-        base = os.path.splitext(vf)[0]; lp = None
-        base_orig = _re.sub(r"_cropped_\d+x\d+$", "", base)
-        cbases = [base, base_orig] if base_orig != base else [base]
-        cands = []
-        for b in cbases:
-            cands += [b, b.replace("-", ""), b.replace("_", ""),
-                      b.replace("-", "_"), b.replace("_", "-")]
-        for cand in cands:
-            fp = os.path.join(val_ldir, cand + ".csv")
-            if os.path.exists(fp): lp = fp; break
-            fp = os.path.join(val_ldir, cand + "_one_hot.csv")
-            if os.path.exists(fp): lp = fp; break
-            if cand.lower() in csv_files:
-                lp = csv_files[cand.lower()]; break
+        base = os.path.splitext(vf)[0]
+        lp = _match_label(base, val_ldir, csv_files)
         if lp is None:
             continue
         vp = os.path.join(val_vdir, vf)
