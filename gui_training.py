@@ -884,6 +884,21 @@ def _match_label(stem, ldir, csv_files):
     return None
 
 
+def load_and_report_val(cur_status, sep_on, val_vdir, val_ldir, ldir):
+    """After the main (train) scan, also scan the separate validation folder
+    (if enabled) and append its result to the status line, so the user can see
+    val actually loaded rather than only finding out at training time."""
+    if not sep_on:
+        return cur_status
+    eff_val_ldir = val_ldir if val_ldir else ldir
+    entries, msg = scan_val_folder(val_vdir, eff_val_ldir)
+    S["_val_preview"] = entries  # cached; run_training re-scans anyway
+    base = cur_status or ""
+    tag = (f" · Val: {len(entries)} matched" if entries
+           else f" · Val: {msg}")
+    return base + tag
+
+
 def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     N = MAX_LABELS
     vdir = _resolve_video_dir(vdir, "train")
@@ -2679,7 +2694,9 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
                  ).then(_update_excluded_choices,
                         [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
-                 ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed)
+                 ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
+                 ).then(load_and_report_val,
+                        [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in], scan_st)
 
     # Head mode change → rebuild all mapping dropdowns + timeline + summary
     map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
