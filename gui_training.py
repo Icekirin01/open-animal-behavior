@@ -776,6 +776,76 @@ def build_mapping_summary_html(mode, dd_values, data_labels, pretrained_names):
 
 # ====================== Label Distribution HTML ======================
 
+def build_aug_preview_html(head_mode, aug_mult, aug_excluded, *dd_vals):
+    """Show, per TRAINING class (after merges), how many frames each behavior
+    has and how the class-balancing multiplier changes its effective share.
+    Updates live as the user changes the multiplier or excluded classes."""
+    if not S["scan_data"] or not S["label_names"]:
+        return "<p style='color:#aaa;font-size:12px;'>Load data to see per-behavior frames</p>"
+    data_labels = S["label_names"]
+    pretrained = S["cfg"]["class_names"] if S["cfg"] else []
+    vals = list(dd_vals[:len(data_labels)])
+    mv = S.get("_mapper_vals")
+    if mv and mv.get("labels") == list(data_labels) and mv.get("values") \
+       and all(v is not None for v in mv["values"]):
+        vals = list(mv["values"])
+    new_names, label_map = compute_label_map_from_dropdowns(
+        head_mode, vals, data_labels, pretrained)
+
+    # frames per training class (merged); excluded labels (-1/None) dropped
+    gcounts = Counter()
+    for d in S["scan_data"]:
+        for k, v in d["counts"].items():
+            tgt = label_map.get(k)
+            if tgt is not None:
+                gcounts[tgt] += v
+
+    try:
+        mult = int(aug_mult)
+    except Exception:
+        mult = 1
+    excluded = set(aug_excluded or [])
+
+    base_total = sum(gcounts.values()) or 1
+    eff = {}
+    for ci, nm in enumerate(new_names):
+        c = gcounts.get(ci, 0)
+        m = 1 if nm in excluded else mult
+        eff[ci] = c * m
+    eff_total = sum(eff.values()) or 1
+
+    html = ["<div style='padding:4px 0;'>"
+            "<p style='font-size:13px;font-weight:500;margin:0 0 6px;'>"
+            "Per-behavior frames (after merge · after balancing)</p>"]
+    for ci, nm in enumerate(new_names):
+        c = gcounts.get(ci, 0)
+        m = 1 if nm in excluded else mult
+        ec = eff[ci]
+        base_pct = 100 * c / base_total
+        eff_pct = 100 * ec / eff_total
+        clr, _ = get_clr(ci, nm)
+        bar_clr = "#ddd" if clr == "#FFFFFF" else clr
+        multtag = (f"<span style='font-size:10px;color:#2e7d32;font-weight:600;'>×{m}</span>"
+                   if m > 1 else
+                   ("<span style='font-size:10px;color:#999;'>×1 (excluded)</span>"
+                    if nm in excluded else ""))
+        html.append(
+            f"<div style='margin-bottom:6px;'>"
+            f"<div style='display:flex;align-items:center;gap:6px;margin-bottom:1px;'>"
+            f"<span style='display:inline-block;width:8px;height:8px;border-radius:2px;"
+            f"background:{bar_clr};flex-shrink:0;{('border:1px solid #ccc;' if clr=='#FFFFFF' else '')}'></span>"
+            f"<span style='font-size:12px;font-weight:500;flex:1;'>{nm} {multtag}</span>"
+            f"<span style='font-size:11px;color:#888;flex-shrink:0;'>"
+            f"{c:,} → {ec:,} fr · {eff_pct:.1f}%</span></div>"
+            f"<div style='height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden;margin-left:14px;'>"
+            f"<div style='width:{max(eff_pct,0.3):.1f}%;height:100%;background:{bar_clr};border-radius:3px;'></div></div>"
+            f"</div>")
+    html.append(f"<p style='font-size:11px;color:#999;margin:4px 0 0;'>"
+                f"Effective frames/epoch: {eff_total:,} (base {base_total:,})</p>")
+    html.append("</div>")
+    return "".join(html)
+
+
 def build_label_dist_html():
     if not S["scan_data"] or not S["label_names"]: return "<p style='color:#aaa;'>Load data to see labels</p>"
     all_label_names=S["label_names"]; matched=S["scan_data"]; total_frames=sum(d["T"] for d in matched)
@@ -1171,6 +1241,24 @@ MAPPER_JS = r"""
     el.dispatchEvent(new Event("change",{bubbles:true}));
   }
 
+  // Synchronous snapshot of the current mapper state (used at Start-training
+  // time so the mapping reaches Python even if the async bridge never fired).
+  window.lmSnapshot=function(){
+    try{
+      const nameOf=id=>(right.find(r=>r.id===id)||{}).name;
+      const kindOf=id=>(right.find(r=>r.id===id)||{}).kind;
+      const payload={mode:MODE,
+        classes:right.filter(r=>r.kind==="class").map(r=>r.name), links:{}};
+      left.forEach((nm,i)=>{
+        const rid=links[i];
+        payload.links[nm]= rid===undefined ? null
+          : (kindOf(rid)==="other" ? "__OTHER__"
+          : (kindOf(rid)==="exclude" ? "__EXCLUDE__" : nameOf(rid)));
+      });
+      return JSON.stringify(payload);
+    }catch(e){ return ""; }
+  };
+
   function addNode(){
     const id="r"+(++seq);
     const ex=right.findIndex(r=>r.kind==="exclude");
@@ -1471,6 +1559,12 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
             else:
                 # target no longer exists (box was deleted/renamed) — fall back
                 out.append(gr.update(value=route_to_other()))
+
+    # Cache the resolved values so training reads the mapper's intent directly,
+    # not the dropdowns (which may not have finished syncing when the user
+    # clicks Start training). Keyed by the current label set for safety.
+    resolved = [u.get("value") if isinstance(u, dict) else None for u in out]
+    S["_mapper_vals"] = {"labels": list(data_labels), "values": resolved[:n]}
     return tuple(out)
 
 
@@ -1540,6 +1634,10 @@ def on_head_mode_change(head_mode, *dd_vals):
 
 def _get_frame(vf, fi):
     if not S["scan_data"]: return None
+    # Don't open videos for the preview while training is running — the
+    # DataLoader is already reading them and a second decord reader here can
+    # error out (that's the "Error" flashing on the timeline).
+    if S.get("_training_active"): return None
     d=next((x for x in S["scan_data"] if x["vf"]==vf),None)
     if not d: return None
     try:
@@ -1580,6 +1678,8 @@ def _preview_video_mapped(vf, head_mode, dd_vals):
     return img, info, tl, gr.update(maximum=max(T-1,1),value=0), cdata
 
 def on_scrub(fi, head_mode, *dd_vals):
+    if S.get("_training_active"):
+        return gr.update(), gr.update()
     vf=S["cur_vf"]
     if not vf or not S["scan_data"]: return None,"<p style='color:#aaa;'>No data</p>"
     d=next((x for x in S["scan_data"] if x["vf"]==vf),None)
@@ -1978,6 +2078,7 @@ def refresh_threshold_epochs():
 
 def cancel_training():
     S["_cancel_training"] = True
+    S["_training_active"] = False
     return "<p style='color:#e74c3c;font-weight:600;'>⛔ Cancelling… will stop after current batch.</p>"
 
 def _pp_local_root():
@@ -2056,6 +2157,10 @@ def auto_preprocess_before_train(pp_enabled, yolo_path, vdir, drive_out,
     makes this instant when preprocess was already done. Yields into the
     center progress card (progress_html)."""
     if not pp_enabled:
+        # Preprocess is OFF → make sure we don't silently reuse cropped clips
+        # from an earlier run. Clearing this forces the scan/training to read
+        # the raw input folder.
+        S["_pp_dirs"] = {}
         yield gr.update()
         return
     last = None
@@ -2086,6 +2191,7 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
                  aug_mult,aug_excluded_classes,
                  *dd_vals):
     S["_cancel_training"] = False
+    S["_training_active"] = True
     try:
         lr=float(lr_str); val_ratio=float(val_pct)/100.0; n_epochs=int(n_epochs)
         batch_sz=int(batch_sz)
@@ -2108,8 +2214,18 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
     pretrained_names=cfg["class_names"]
     os.makedirs(odir,exist_ok=True)
 
-    # Compute label map from dropdown values
+    # Compute label map from dropdown values. Prefer the visual mapper's
+    # cached values when they match the current label set — the dropdowns can
+    # lag behind the mapper's JSON bridge when the user clicks Start training
+    # right after dragging, and reading stale (all-keep) dropdowns would train
+    # un-merged classes.
     vals = list(dd_vals[:len(data_labels)])
+    mv = S.get("_mapper_vals")
+    if mv and mv.get("labels") == list(data_labels) and mv.get("values"):
+        cached = mv["values"]
+        if len(cached) == len(data_labels) and all(v is not None for v in cached):
+            vals = list(cached)
+            print("🏷️ Using label mapping from the visual mapper")
     new_names, label_map = compute_label_map_from_dropdowns(head_mode, vals, data_labels, pretrained_names)
     new_nc = len(new_names)
 
@@ -2123,6 +2239,16 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
 
     data=S["scan_data"]
     tidx=S["split_indices"]["train"]; vidx=S["split_indices"]["val"]
+
+    # Strict confirmation of what the training actually reads: print the folder
+    # of the first video so it's unambiguous whether cropped clips or the raw
+    # input folder is in use.
+    if data:
+        _first = data[0].get("vp", "")
+        _pp = (S.get("_pp_dirs") or {}).get("train")
+        _src = "CROPPED (preprocessed)" if (_pp and _pp in _first) else "INPUT folder (raw)"
+        print(f"📂 Training reads from: {_src}")
+        print(f"   e.g. {_first}")
 
     if use_sep_val:
         # Separate validation folder: use all training data for training (no
@@ -2296,6 +2422,11 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
             for i,l in enumerate(al_): oh[i,l]=1
             pr_arr=np.array(apr_)
             for ci in range(new_nc):
+                # A class with no positive samples in this validation set has no
+                # defined average precision — sklearn warns and returns 0. Skip
+                # it explicitly (score 0) instead of triggering the warning.
+                if oh[:,ci].sum()==0:
+                    app.append(0.0); continue
                 try: app.append(average_precision_score(oh[:,ci],pr_arr[:,ci]))
                 except: app.append(0.0)
             mAP=np.mean(app)
@@ -2377,6 +2508,7 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
 
     with open(os.path.join(odir,"training_log.json"),"w") as f: json.dump(S["train_log"],f,indent=2)
     print("✅ Training complete!")
+    S["_training_active"] = False
 
 # ====================== Cursor JS ======================
 
@@ -2741,6 +2873,8 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 aug_excluded_in=gr.CheckboxGroup(choices=[],value=[],
                                                  label="Do NOT multiply these classes",
                                                  info="Typically exclude majority classes like 'Other' so minority classes become relatively more frequent. Updates when you change label mapping.")
+                aug_preview_html=gr.HTML(
+                    "<p style='color:#aaa;font-size:12px;'>Load data to see per-behavior frames</p>")
 
             with gr.Row():
                 train_btn=gr.Button("🚀 Start training",variant="primary",size="lg")
@@ -2833,7 +2967,10 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                  ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
                  ).then(load_and_report_val,
                         [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in],
-                        [scan_st, vid_list_html])
+                        [scan_st, vid_list_html]) \
+                 .then(build_aug_preview_html,
+                       [head_mode_dd, aug_mult_in, aug_excluded_in, *map_dds],
+                       aug_preview_html)
 
     # Head mode change → rebuild all mapping dropdowns + timeline + summary
     map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
@@ -2857,6 +2994,14 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     for dd in map_dds:
         dd.change(_update_excluded_choices,
                   [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+
+    # Per-behavior frames preview — refresh on multiplier / excluded / mapping
+    _aug_prev_inputs = [head_mode_dd, aug_mult_in, aug_excluded_in, *map_dds]
+    aug_mult_in.change(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
+    aug_excluded_in.change(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
+    head_mode_dd.change(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
+    for dd in map_dds:
+        dd.change(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
 
     # Val ratio or val seed change → recompute split
     vr_in.change(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
@@ -2885,7 +3030,11 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     sep_val_cb.change(_on_sep_toggle, [sep_val_cb], [sep_val_grp, vid_list_html])
 
     # YOLO preprocess panel
-    pp_toggle.change(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp])
+    def _on_pp_toggle(on):
+        if not on:
+            S["_pp_dirs"] = {}   # stop reusing old cropped clips
+        return gr.update(visible=on)
+    pp_toggle.change(_on_pp_toggle, [pp_toggle], [pp_grp])
     pp_btn.click(run_preprocess_training,
                  [pp_yolo_in, vdir_in, pp_drive_in, pp_pad_in, sep_val_cb, val_vdir_in],
                  [progress_html, pp_btn])
@@ -2912,8 +3061,16 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 .then(lambda on: gr.update(visible=on), [sep_val_cb], [sep_val_grp]) \
                 .then(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp])
 
-    # Training — auto-preprocess (if enabled) → rescan onto cropped clips → train
-    train_btn.click(auto_preprocess_before_train,
+    # Training — first pull the mapper's current state straight from the DOM
+    # into lm_bridge (so the mapping is guaranteed present even if the async
+    # bridge never fired), apply it to the dropdowns + cache, THEN preprocess,
+    # rescan and train.
+    train_btn.click(
+        None, None, lm_bridge,
+        js="() => (window.lmSnapshot ? window.lmSnapshot() : '')"
+    ).then(
+        apply_mapper_bridge, [lm_bridge, head_mode_dd, *map_dds], map_dds
+    ).then(auto_preprocess_before_train,
                     [pp_toggle, pp_yolo_in, vdir_in, pp_drive_in, pp_pad_in,
                      sep_val_cb, val_vdir_in],
                     [progress_html]) \
