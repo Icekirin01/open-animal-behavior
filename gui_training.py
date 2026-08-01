@@ -2476,6 +2476,104 @@ def load_demo_training(repo, val_pct, val_seed, head_mode, *dd_vals):
 
 # ====================== GUI ======================
 
+def save_training_config(save_path, head_mode,
+                         repo, vdir, ldir, odir, sep_val, val_vdir, val_ldir,
+                         pp_enabled, pp_yolo, pp_pad, pp_drive,
+                         val_ratio, epochs, batch, lr, val_seed, train_seed,
+                         num_workers, cache_local,
+                         aug_hflip, aug_vflip, aug_rot, aug_bright, aug_contrast,
+                         aug_sat, aug_blur, aug_tdrop, aug_mult, aug_excluded,
+                         *map_dds):
+    """Serialize the whole training GUI state to a JSON file (on Drive or
+    anywhere writable). Returns a status HTML string."""
+    import json as _json
+    cfg = {
+        "_format": "creac_training_config_v1",
+        "head_mode": head_mode,
+        "paths": {"repo": repo, "vdir": vdir, "ldir": ldir, "odir": odir,
+                  "sep_val": bool(sep_val), "val_vdir": val_vdir, "val_ldir": val_ldir},
+        "preprocess": {"enabled": bool(pp_enabled), "yolo": pp_yolo,
+                       "padding": pp_pad, "drive_out": pp_drive},
+        "train": {"val_ratio": val_ratio, "epochs": epochs, "batch": batch,
+                  "lr": lr, "val_seed": val_seed, "train_seed": train_seed,
+                  "num_workers": num_workers, "cache_local": bool(cache_local)},
+        "aug": {"hflip": aug_hflip, "vflip": aug_vflip, "rot": aug_rot,
+                "brightness": aug_bright, "contrast": aug_contrast,
+                "saturation": aug_sat, "blur": aug_blur, "tdrop": aug_tdrop,
+                "mult": aug_mult, "excluded": list(aug_excluded or [])},
+        "label_map_values": [v for v in map_dds],
+        "label_names": S.get("label_names", []),
+    }
+    if not save_path or not save_path.strip():
+        return _cfg_card("❌ Enter a path to save the config (.json)", "#e74c3c")
+    path = save_path.strip()
+    if not path.lower().endswith(".json"):
+        path += ".json"
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump(cfg, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return _cfg_card(f"❌ Save failed: {e}", "#e74c3c")
+    return _cfg_card(f"✅ Config saved to<br>{path}", "#2e7d32")
+
+
+def _cfg_card(msg, color="#555"):
+    return (f"<div style='background:#fff;border:1px solid #e0e0e0;border-radius:8px;"
+            f"padding:8px 12px;font-size:13px;color:{color};'>{msg}</div>")
+
+
+def load_training_config(load_path):
+    """Read a config JSON and return updates for every input component, plus a
+    status string. Order of returned updates MUST match the outputs list wired
+    in the UI."""
+    import json as _json
+    N = MAX_LABELS
+    # helper to build the full update tuple in a fixed order
+    def blanks():
+        return [gr.update() for _ in range(31 + N)]  # 31 scalar fields + N map dds
+
+    if not load_path or not os.path.isfile(load_path.strip()):
+        return (_cfg_card("❌ Config file not found", "#e74c3c"), *blanks())
+    try:
+        with open(load_path.strip(), encoding="utf-8") as f:
+            cfg = _json.load(f)
+    except Exception as e:
+        return (_cfg_card(f"❌ Load failed: {e}", "#e74c3c"), *blanks())
+
+    p = cfg.get("paths", {}); pp = cfg.get("preprocess", {})
+    tr = cfg.get("train", {}); ag = cfg.get("aug", {})
+    mv = cfg.get("label_map_values", [])
+
+    def U(v):
+        return gr.update(value=v) if v is not None else gr.update()
+
+    updates = [
+        U(cfg.get("head_mode")),
+        U(p.get("vdir")), U(p.get("ldir")), U(p.get("odir")),
+        U(p.get("sep_val")), U(p.get("val_vdir")), U(p.get("val_ldir")),
+        U(pp.get("enabled")), U(pp.get("yolo")), U(pp.get("padding")), U(pp.get("drive_out")),
+        U(tr.get("val_ratio")), U(tr.get("epochs")), U(tr.get("batch")), U(tr.get("lr")),
+        U(tr.get("val_seed")), U(tr.get("train_seed")), U(tr.get("num_workers")),
+        U(tr.get("cache_local")),
+        U(ag.get("hflip")), U(ag.get("vflip")), U(ag.get("rot")),
+        U(ag.get("brightness")), U(ag.get("contrast")), U(ag.get("saturation")),
+        U(ag.get("blur")), U(ag.get("tdrop")), U(ag.get("mult")),
+        gr.update(value=ag.get("excluded", [])),
+    ]
+    # map dropdown values
+    for i in range(N):
+        if i < len(mv) and mv[i] is not None:
+            updates.append(gr.update(value=mv[i]))
+        else:
+            updates.append(gr.update())
+
+    status = _cfg_card(f"✅ Loaded config from<br>{load_path.strip()}"
+                       "<br>Click <b>Load folder</b> to scan with these settings.",
+                       "#2e7d32")
+    return (status, *updates)
+
+
 with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     gr.Markdown("# Animal Behavior Model Training\nFine-tune from pretrained — preview labels & configure mapping before training")
 
@@ -2530,6 +2628,17 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                             "Pressing Start training also runs this automatically if "
                             "not done yet. When 'separate validation folder' is on, "
                             "train and val are cropped into their own subfolders.</p>")
+
+            # ---- Save / Load config ----
+            gr.Markdown("---")
+            with gr.Accordion("💾 Save / Load config", open=False):
+                cfg_path_in=gr.Textbox(label="Config file (.json)",
+                    value="/content/drive/MyDrive/squid/training_config.json",
+                    placeholder="/content/drive/My Drive/.../config.json")
+                with gr.Row():
+                    cfg_save_btn=gr.Button("💾 Save config", size="sm")
+                    cfg_load_btn=gr.Button("📂 Load config", size="sm")
+                cfg_status=gr.HTML("")
 
         # ===== CENTER =====
         with gr.Column(scale=2, min_width=400):
@@ -2780,6 +2889,28 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     pp_btn.click(run_preprocess_training,
                  [pp_yolo_in, vdir_in, pp_drive_in, pp_pad_in, sep_val_cb, val_vdir_in],
                  [progress_html, pp_btn])
+
+    # Save / Load config
+    _cfg_save_inputs = [cfg_path_in, head_mode_dd,
+        repo_in, vdir_in, ldir_in, odir_in, sep_val_cb, val_vdir_in, val_ldir_in,
+        pp_toggle, pp_yolo_in, pp_pad_in, pp_drive_in,
+        vr_in, ep_in, bs_in, lr_in, val_seed_in, train_seed_in,
+        nw_in, cache_local_cb,
+        aug_hflip_in, aug_vflip_in, aug_rot_in, aug_brightness_in, aug_contrast_in,
+        aug_saturation_in, aug_blur_in, aug_tdrop_in, aug_mult_in, aug_excluded_in,
+        *map_dds]
+    cfg_save_btn.click(save_training_config, _cfg_save_inputs, [cfg_status])
+
+    _cfg_load_outputs = [cfg_status, head_mode_dd,
+        vdir_in, ldir_in, odir_in, sep_val_cb, val_vdir_in, val_ldir_in,
+        pp_toggle, pp_yolo_in, pp_pad_in, pp_drive_in,
+        vr_in, ep_in, bs_in, lr_in, val_seed_in, train_seed_in, nw_in, cache_local_cb,
+        aug_hflip_in, aug_vflip_in, aug_rot_in, aug_brightness_in, aug_contrast_in,
+        aug_saturation_in, aug_blur_in, aug_tdrop_in, aug_mult_in, aug_excluded_in,
+        *map_dds]
+    cfg_load_btn.click(load_training_config, [cfg_path_in], _cfg_load_outputs) \
+                .then(lambda on: gr.update(visible=on), [sep_val_cb], [sep_val_grp]) \
+                .then(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp])
 
     # Training — auto-preprocess (if enabled) → rescan onto cropped clips → train
     train_btn.click(auto_preprocess_before_train,

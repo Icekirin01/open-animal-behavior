@@ -178,6 +178,40 @@ def cache_video_to_local(src_path, cache_dir=LOCAL_CACHE_DIR):
         return src_path
 
 
+def _frame_count(path):
+    """Frame count of a video via cv2, or -1 if unreadable."""
+    import cv2
+    try:
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return -1
+        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        return n
+    except Exception:
+        return -1
+
+
+def _is_complete_crop(cropped_path, src_path):
+    """A cropped clip counts as done only if it exists AND has (about) the same
+    frame count as its source — cropping is frame-aligned, so a mismatch means
+    the file was truncated (e.g. the session was interrupted mid-video)."""
+    import os
+    if not cropped_path or not os.path.exists(cropped_path):
+        return False
+    if os.path.getsize(cropped_path) == 0:
+        return False
+    out_n = _frame_count(cropped_path)
+    if out_n <= 0:
+        return False
+    src_n = _frame_count(src_path)
+    if src_n <= 0:
+        # can't read source frame count — accept a non-empty readable output
+        return True
+    # allow a tiny tolerance for codecs that report ±1
+    return abs(out_n - src_n) <= 1
+
+
 def _cropped_name(vid_path):
     return f"{Path(vid_path).stem}_cropped_{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}.mp4"
 
@@ -265,14 +299,26 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
             local_out = os.path.join(local_out_dir, out_name)
             drive_out = os.path.join(drive_out_dir, out_name) if drive_out_dir else None
 
-            # ---- skip if already cropped ----
-            if skip_existing and os.path.exists(local_out) and \
-               (drive_out is None or os.path.exists(drive_out)):
-                outputs.append(local_out)
-                yield {"type": "progress", "phase": "crop", "video": vid_name,
-                       "vid_i": vi + 1, "vid_n": n, "frame": 1, "total": 1,
-                       "skipped": True}
-                continue
+            # ---- skip if a COMPLETE crop already exists ----
+            # After a disconnect Colab wipes /content, so the local copy is
+            # gone but the Drive mirror survives. Check both, and verify the
+            # file isn't truncated (frame count must match the source).
+            if skip_existing:
+                done_local = _is_complete_crop(local_out, src_path)
+                done_drive = (drive_out is not None
+                              and _is_complete_crop(drive_out, src_path))
+                if done_local or done_drive:
+                    # make sure the local copy exists for training to read
+                    if not done_local and done_drive:
+                        try:
+                            shutil.copyfile(drive_out, local_out)
+                        except Exception as e:
+                            print(f"⚠️ Could not restore {out_name} from Drive: {e}")
+                    outputs.append(local_out)
+                    yield {"type": "progress", "phase": "crop", "video": vid_name,
+                           "vid_i": vi + 1, "vid_n": n, "frame": 1, "total": 1,
+                           "skipped": True}
+                    continue
 
             # ---- 1. cache original to local ----
             yield {"type": "progress", "phase": "cache", "video": vid_name,
