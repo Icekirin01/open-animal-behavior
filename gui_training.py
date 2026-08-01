@@ -482,20 +482,24 @@ BUILTIN_MODELS = {
 }
 
 def list_models(repo):
-    builtin_names = list(BUILTIN_MODELS.keys())
-    hf_names = []
-    hf_err = None
     try:
-        files = list_repo_files(repo)
-        pths = [f for f in files if f.endswith("/model.pth") or f == "model.pth"]
-        if not pths: pths = [f for f in files if f.endswith(".pth")]
-        hf_names = [os.path.dirname(p) if "/" in p else p for p in pths]
+        builtin_names = list(BUILTIN_MODELS.keys())
+        hf_names = []
+        hf_err = None
+        try:
+            files = list_repo_files(repo)
+            pths = [f for f in files if f.endswith("/model.pth") or f == "model.pth"]
+            if not pths: pths = [f for f in files if f.endswith(".pth")]
+            hf_names = [os.path.dirname(p) if "/" in p else p for p in pths]
+        except Exception as e:
+            hf_err = str(e)
+        names = builtin_names + hf_names
+        msg = f"✅ {len(builtin_names)} builtin + {len(hf_names)} HF model(s)"
+        if hf_err: msg += f"  (HF list failed: {hf_err})"
+        return gr.update(choices=names, value=names[0] if names else None), msg
     except Exception as e:
-        hf_err = str(e)
-    names = builtin_names + hf_names
-    msg = f"✅ {len(builtin_names)} builtin + {len(hf_names)} HF model(s)"
-    if hf_err: msg += f"  (HF list failed: {hf_err})"
-    return gr.update(choices=names, value=names[0] if names else None), msg
+        # Never let this surface as a component "Error" on page load.
+        return gr.update(choices=[], value=None), f"⚠️ Model list error: {e}"
 
 def load_pretrained(repo, mname):
     """Returns status_text. Window is fixed at 16, stride at 4."""
@@ -3100,8 +3104,8 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     # bridge never fired), apply it to the dropdowns + cache, THEN preprocess,
     # rescan and train.
     train_btn.click(
-        None, None, lm_bridge,
-        js="() => (window.lmSnapshot ? window.lmSnapshot() : '')"
+        lambda: gr.update(), None, lm_bridge,
+        js="() => { try { return (window.lmSnapshot && window.lmSnapshot()) || ''; } catch(e) { return ''; } }"
     ).then(
         apply_mapper_bridge, [lm_bridge, head_mode_dd, *map_dds], map_dds
     ).then(auto_preprocess_before_train,
