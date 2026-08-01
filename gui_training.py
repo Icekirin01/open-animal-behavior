@@ -2542,10 +2542,12 @@ CUSTOM_CSS = """
            padding:0!important;margin:-1px!important;overflow:hidden!important;
            clip:rect(0 0 0 0)!important;border:0!important;opacity:0!important;
            pointer-events:none!important}
-/* darker page background, blocks stay white -> stronger contrast */
+/* Page background (beige). Section panels are light grey so the divisions
+   between ① Select model / ② Load data / ③ Train are visible again; inputs
+   inside them stay white (rule further down). */
 .gradio-container { background: #d8d4c4 !important; }
 .gr-box, .block, .form, .gr-panel, .gr-accordion,
-.gradio-container .prose { background: #ffffff !important; }
+.gradio-container .prose { background: #f2f1ec !important; }
 
 /* force black text (overrides Gradio grey secondary/tertiary vars) — but NOT
    on form controls, which get their own white-bg + black-text rule below */
@@ -2562,7 +2564,6 @@ CUSTOM_CSS = """
 .gradio-container {
     --input-background-fill: #ffffff !important;
     --input-background-fill-focus: #ffffff !important;
-    --block-background-fill: #ffffff !important;
     --border-color-primary: #555555 !important;
 }
 .gradio-container input,
