@@ -809,9 +809,35 @@ def _resolve_video_dir(vdir, which="train"):
     pp = S.get("_pp_dirs") or {}
     d = pp.get(which)
     if d and os.path.isdir(d) and any(
-            f.lower().endswith((".mp4", ".avi", ".mov")) for f in os.listdir(d)):
+            _has_ext(f, (".mp4", ".avi", ".mov")) for f in os.listdir(d)):
         return d
     return vdir
+
+
+_COPY_TAIL = r"(?:\s*的副本|\s*-\s*副本|\s*副本|\s*—\s*副本|\s*-?\s*[Cc]opy|\s*-?\s*copy\s*\d*|\s*\(\d+\))*"
+
+
+def _has_ext(fname, exts):
+    """True if fname has one of exts, even when Google Drive appended a copy
+    marker AFTER the extension (e.g. 'D-1102-8.mp4 的副本', 'x.csv copy')."""
+    import re as _re
+    low = fname.lower()
+    for e in exts:
+        if _re.search(_re.escape(e) + _COPY_TAIL + r"$", low):
+            return True
+    return False
+
+
+def _clean_stem(fname, exts):
+    """Return the filename stem with the extension AND any trailing copy
+    marker removed. 'F-1223-3.csv 的副本' -> 'F-1223-3'."""
+    import re as _re
+    low = fname.lower()
+    for e in exts:
+        m = _re.search(_re.escape(e) + _COPY_TAIL + r"$", low)
+        if m:
+            return fname[:m.start()]
+    return os.path.splitext(fname)[0]
 
 
 def _strip_suffixes(stem):
@@ -869,18 +895,18 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     if not vdir or not os.path.isdir(vdir): return empty(f"❌ Video dir not found")
     if not ldir or not os.path.isdir(ldir): return empty(f"❌ Label dir not found")
 
-    vfiles=sorted([f for f in os.listdir(vdir) if f.lower().endswith((".mp4",".avi",".mov"))])
+    vfiles=sorted([f for f in os.listdir(vdir) if _has_ext(f, (".mp4",".avi",".mov"))])
     if not vfiles: return empty("❌ No videos found")
 
     # Build a lookup of all CSV files in label dir for flexible matching
-    csv_files = {os.path.splitext(f)[0].lower(): os.path.join(ldir, f)
-                 for f in os.listdir(ldir) if f.lower().endswith(".csv")}
+    csv_files = {_clean_stem(f, (".csv",)).lower(): os.path.join(ldir, f)
+                 for f in os.listdir(ldir) if _has_ext(f, (".csv",))}
 
     matched=[]; all_label_names=None
     boris_count=0; onehot_count=0
 
     for vf in vfiles:
-        base=os.path.splitext(vf)[0]
+        base=_clean_stem(vf, (".mp4", ".avi", ".mov"))
         lp=_match_label(base, ldir, csv_files)
         if lp is None: continue
         vp = os.path.join(vdir, vf)
@@ -1614,16 +1640,16 @@ def scan_val_folder(val_vdir, val_ldir):
         return [], f"❌ Val label dir not found: {val_ldir}"
 
     vfiles = sorted([f for f in os.listdir(val_vdir)
-                     if f.lower().endswith((".mp4", ".avi", ".mov"))])
+                     if _has_ext(f, (".mp4", ".avi", ".mov"))])
     if not vfiles:
         return [], "❌ No videos in val folder"
 
-    csv_files = {os.path.splitext(f)[0].lower(): os.path.join(val_ldir, f)
-                 for f in os.listdir(val_ldir) if f.lower().endswith(".csv")}
+    csv_files = {_clean_stem(f, (".csv",)).lower(): os.path.join(val_ldir, f)
+                 for f in os.listdir(val_ldir) if _has_ext(f, (".csv",))}
 
     entries = []
     for vf in vfiles:
-        base = os.path.splitext(vf)[0]
+        base = _clean_stem(vf, (".mp4", ".avi", ".mov"))
         lp = _match_label(base, val_ldir, csv_files)
         if lp is None:
             continue

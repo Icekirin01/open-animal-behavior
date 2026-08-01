@@ -20,6 +20,11 @@ from config_utils import normalize_config, find_config_for_pth
 from inference import preprocess, infer_video_gen, remap_with_disabled, get_others_idx
 import precrop
 
+_COPY_TAIL_RE = r"(?:\s*的副本|\s*-\s*副本|\s*副本|\s*—\s*副本|\s*-?\s*[Cc]opy|\s*-?\s*copy\s*\d*|\s*\(\d+\))*"
+def _is_video(fname):
+    import re
+    return bool(re.search(r"(\.mp4|\.avi|\.mov)"+_COPY_TAIL_RE+r"$", fname.lower()))
+
 # ==================== 👇 修改這裡 👇 ====================
 HF_REPO_ID         = "yiheng266/animal-social-models"
 DEFAULT_VIDEO_DIR  = "/content/drive/My Drive/videos/"
@@ -224,7 +229,7 @@ def load_demo_inference(repo):
             if not os.path.exists(dest) or os.path.getsize(dest) != os.path.getsize(local):
                 import shutil; shutil.copy2(local, dest)
         # Scan for videos
-        videos = sorted([f for f in os.listdir(DEMO_LOCAL_DIR) if f.lower().endswith((".mp4", ".avi", ".mov"))])
+        videos = sorted([f for f in os.listdir(DEMO_LOCAL_DIR) if _is_video(f)])
         if not videos:
             return "", gr.update(choices=[], value=None), "⚠️ No videos in demo/", None, "", gr.update(maximum=0, value=0), "", S["_cursor_data"]
         # Store active dir in state
@@ -260,7 +265,7 @@ def scan_videos_and_preview(vdir):
     if not vdir or not os.path.isdir(vdir):
         yield "", *empty
         return
-    v = sorted([f for f in os.listdir(vdir) if f.lower().endswith((".mp4", ".avi", ".mov"))])
+    v = sorted([f for f in os.listdir(vdir) if _is_video(f)])
     if not v:
         yield "", gr.update(choices=[], value=None), "❌ No videos", None, "", \
               gr.update(maximum=0, value=0), "", S["_cursor_data"]
@@ -665,7 +670,7 @@ def run_batch(num_workers, cache_local):
     vdir = S.get("_active_vdir")
     if not S["model"]: yield "", "", None, "", "", "", "❌ Load model first", U, S["_cursor_data"], ""; return
     if not vdir or not os.path.isdir(vdir): yield "", "", None, "", "", "", "❌ Load videos first", U, S["_cursor_data"], ""; return
-    vids = sorted([f for f in os.listdir(vdir) if f.lower().endswith((".mp4", ".avi", ".mov"))])
+    vids = sorted([f for f in os.listdir(vdir) if _is_video(f)])
     if not vids: yield "", "", None, "", "", "", "❌ No videos", U, S["_cursor_data"], ""; return
     ws = S["cfg"]["backbone"]["num_frames"] if S.get("cfg") else None
     total = len(vids); blog = []

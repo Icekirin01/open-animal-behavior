@@ -90,10 +90,15 @@ def crop_and_upscale(frame, bbox, padding, out_w, out_h):
 
 
 def list_videos(video_dir):
-    vids = []
-    for ext in VIDEO_EXTS:
-        vids.extend(glob.glob(os.path.join(video_dir, f"*{ext}")))
-        vids.extend(glob.glob(os.path.join(video_dir, f"*{ext.upper()}")))
+    """List video files, including ones where Google Drive appended a copy
+    marker after the extension (e.g. 'D-1102-8.mp4 的副本')."""
+    import re
+    copy_tail = (r"(?:\s*的副本|\s*-\s*副本|\s*副本|\s*—\s*副本|\s*-?\s*[Cc]opy"
+                 r"|\s*-?\s*copy\s*\d*|\s*\(\d+\))*")
+    pat = re.compile(r"(" + "|".join(re.escape(e) for e in VIDEO_EXTS) + r")"
+                     + copy_tail + r"$", re.IGNORECASE)
+    vids = [os.path.join(video_dir, f) for f in os.listdir(video_dir)
+            if pat.search(f)]
     return sorted(set(vids))
 
 
