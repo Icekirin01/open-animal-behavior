@@ -1988,7 +1988,8 @@ def run_preprocess_training(yolo_path, vdir, drive_out, crop_padding,
                             use_sep_val, val_vdir):
     """Preprocess (YOLO pre-crop) the training videos — and the separate
     validation videos too, if that option is on — into local train/val
-    subfolders (mirrored to Drive). Yields (pp_status, pp_btn) updates.
+    subfolders (mirrored to Drive). Yields (progress_card, pp_btn) updates —
+    progress goes into the SAME center card training uses (progress_html).
 
     On success stores the new local dirs in S["_pp_dirs"] so training/scan can
     repoint to the cropped clips.
@@ -2052,7 +2053,8 @@ def run_preprocess_training(yolo_path, vdir, drive_out, crop_padding,
 def auto_preprocess_before_train(pp_enabled, yolo_path, vdir, drive_out,
                                  crop_padding, use_sep_val, val_vdir):
     """Run YOLO preprocess before training if the toggle is on. Skip-existing
-    makes this instant when preprocess was already done. Yields pp_status."""
+    makes this instant when preprocess was already done. Yields into the
+    center progress card (progress_html)."""
     if not pp_enabled:
         yield gr.update()
         return
@@ -2523,7 +2525,6 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                 pp_drive_in=gr.Textbox(label="Preprocessed output dir (Drive backup)",
                     value="/content/drive/MyDrive/squid/preprocessed")
                 pp_btn=gr.Button("✂️ Run preprocess",variant="primary")
-                pp_status=gr.HTML("")
                 gr.Markdown("<p style='font-size:12px;color:#888;'>Cropped clips are "
                             "written locally (used for training) and mirrored to Drive. "
                             "Pressing Start training also runs this automatically if "
@@ -2778,13 +2779,13 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     pp_toggle.change(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp])
     pp_btn.click(run_preprocess_training,
                  [pp_yolo_in, vdir_in, pp_drive_in, pp_pad_in, sep_val_cb, val_vdir_in],
-                 [pp_status, pp_btn])
+                 [progress_html, pp_btn])
 
     # Training — auto-preprocess (if enabled) → rescan onto cropped clips → train
     train_btn.click(auto_preprocess_before_train,
                     [pp_toggle, pp_yolo_in, vdir_in, pp_drive_in, pp_pad_in,
                      sep_val_cb, val_vdir_in],
-                    [pp_status]) \
+                    [progress_html]) \
              .then(rescan_after_preprocess,
                    [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds],
                    scan_outputs) \
