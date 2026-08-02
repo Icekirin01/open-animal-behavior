@@ -2542,12 +2542,24 @@ CUSTOM_CSS = """
            padding:0!important;margin:-1px!important;overflow:hidden!important;
            clip:rect(0 0 0 0)!important;border:0!important;opacity:0!important;
            pointer-events:none!important}
-/* Page background (beige). Section panels are light grey so the divisions
-   between ① Select model / ② Load data / ③ Train are visible again; inputs
-   inside them stay white (rule further down). */
-.gradio-container { background: #d8d4c4 !important; }
-.gr-box, .block, .form, .gr-panel, .gr-accordion,
-.gradio-container .prose { background: #f2f1ec !important; }
+/* The GAPS between boxes (the page background) are dark, so the white boxes
+   read as separate cards. Everything that is a box/container — inputs, status,
+   preview, and the panels wrapping them — is WHITE. */
+.gradio-container { background: #cfcaba !important; }
+
+/* every box and container = white */
+.gradio-container .gr-group,
+.gradio-container [class*="group"],
+.gradio-container .gr-panel,
+.gradio-container .gr-accordion,
+.gradio-container .block,
+.gradio-container .form,
+.gradio-container .gr-box,
+.gradio-container [data-testid="textbox"],
+.gradio-container [data-testid="image"],
+.gradio-container .prose {
+    background: #ffffff !important;
+}
 
 /* force black text (overrides Gradio grey secondary/tertiary vars) — but NOT
    on form controls, which get their own white-bg + black-text rule below */
@@ -2558,12 +2570,11 @@ CUSTOM_CSS = """
     --color-text-tertiary: #000000;
 }
 
-/* Inputs: force WHITE background + black text. The Soft theme pairs light text
-   with a dark field fill; forcing only the text to black (above) left dark
-   fields with black text = unreadable black boxes. Override the theme fill. */
+/* Inputs / status / preview: force WHITE background + black text. */
 .gradio-container {
     --input-background-fill: #ffffff !important;
     --input-background-fill-focus: #ffffff !important;
+    --block-background-fill: #ffffff !important;
     --border-color-primary: #555555 !important;
 }
 .gradio-container input,
