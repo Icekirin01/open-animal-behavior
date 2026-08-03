@@ -3143,8 +3143,8 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         aug_saturation_in, aug_blur_in, aug_tdrop_in, aug_mult_in, aug_excluded_in,
         *map_dds]
     cfg_load_btn.click(load_training_config, [cfg_path_in], _cfg_load_outputs) \
-                .then(lambda on: gr.update(visible=on), [sep_val_cb], [sep_val_grp]) \
-                .then(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp]) \
+                .then(_on_sep_toggle, [sep_val_cb], [sep_val_grp, vid_list_html]) \
+                .then(_on_pp_toggle, [pp_toggle], [pp_grp]) \
                 .then(do_scan_and_preview,
                       [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds],
                       scan_outputs) \
