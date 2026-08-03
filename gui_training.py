@@ -2784,7 +2784,8 @@ def load_training_config(load_path):
         updates.append(gr.update())   # leave map dropdowns untouched for now
 
     status = _cfg_card(f"✅ Loaded config from<br>{load_path.strip()}"
-                       "<br>Scanning the data folder to apply label mapping…",
+                       "<br>Now click <b>📂 Load folder</b> to scan and apply the "
+                       "label mapping.",
                        "#2e7d32")
     return (status, *updates)
 
@@ -3144,21 +3145,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         *map_dds]
     cfg_load_btn.click(load_training_config, [cfg_path_in], _cfg_load_outputs) \
                 .then(_on_sep_toggle, [sep_val_cb], [sep_val_grp, vid_list_html]) \
-                .then(_on_pp_toggle, [pp_toggle], [pp_grp]) \
-                .then(do_scan_and_preview,
-                      [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds],
-                      scan_outputs) \
-                .then(_update_excluded_choices,
-                      [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in) \
-                .then(apply_pending_cfg_map, [head_mode_dd, *map_dds],
-                      [head_mode_dd, aug_excluded_in, *map_dds]) \
-                .then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed) \
-                .then(load_and_report_val,
-                      [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in],
-                      [scan_st, vid_list_html]) \
-                .then(build_aug_preview_html,
-                      [head_mode_dd, aug_mult_in, aug_excluded_in, *map_dds],
-                      aug_preview_html)
+                .then(_on_pp_toggle, [pp_toggle], [pp_grp])
 
     # Training — first pull the mapper's current state straight from the DOM
     # into lm_bridge (so the mapping is guaranteed present even if the async
