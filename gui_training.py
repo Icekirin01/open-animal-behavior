@@ -3152,7 +3152,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     # bridge never fired), apply it to the dropdowns + cache, THEN preprocess,
     # rescan and train.
     train_btn.click(
-        lambda: gr.update(), None, lm_bridge,
+        lambda x: x, lm_bridge, lm_bridge,
         js="() => { try { return (window.lmSnapshot && window.lmSnapshot()) || ''; } catch(e) { return ''; } }"
     ).then(
         apply_mapper_bridge, [lm_bridge, head_mode_dd, *map_dds], map_dds
