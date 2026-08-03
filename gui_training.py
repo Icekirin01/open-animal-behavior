@@ -2701,17 +2701,24 @@ def _cfg_card(msg, color="#555"):
 
 
 def apply_pending_cfg_map(head_mode, *dd_vals):
-    """After a scan has built the map-dropdown choices, apply a label mapping
-    (and head mode) that was loaded from a config file (stashed in
+    """After a scan has built the choices, apply the label mapping, head mode,
+    AND excluded classes that were loaded from a config file (stashed in
     S["_pending_cfg_map"]). Only applies if the config's labels match the
-    freshly scanned labels. Returns (head_mode_update, *map_dd_updates)."""
+    freshly scanned labels (otherwise the config is for a different dataset and
+    we leave the scan's own values). Returns
+    (head_mode_update, excluded_update, *map_dd_updates)."""
     N = MAX_LABELS
     pend = S.get("_pending_cfg_map")
     data_labels = S.get("label_names", [])
     if not pend or pend.get("labels") != list(data_labels):
-        return (gr.update(), *[gr.update() for _ in range(N)])
+        # different dataset (or nothing pending) → keep whatever the scan set
+        S["_pending_cfg_map"] = None
+        return (gr.update(), gr.update(), *[gr.update() for _ in range(N)])
     hm = pend.get("head_mode")
     hm_update = gr.update(value=hm) if hm else gr.update()
+    # excluded classes: keep only those that are valid training-class names now
+    exc = pend.get("excluded", []) or []
+    exc_update = gr.update(value=exc)
     vals = pend.get("values", [])
     out = []
     for i in range(N):
@@ -2723,7 +2730,7 @@ def apply_pending_cfg_map(head_mode, *dd_vals):
                          "values": [vals[i] if i < len(vals) else None
                                     for i in range(len(data_labels))]}
     S["_pending_cfg_map"] = None
-    return (hm_update, *out)
+    return (hm_update, exc_update, *out)
 
 
 def load_training_config(load_path):
@@ -2762,25 +2769,22 @@ def load_training_config(load_path):
         U(ag.get("hflip")), U(ag.get("vflip")), U(ag.get("rot")),
         U(ag.get("brightness")), U(ag.get("contrast")), U(ag.get("saturation")),
         U(ag.get("blur")), U(ag.get("tdrop")), U(ag.get("mult")),
-        gr.update(value=ag.get("excluded", [])),
+        gr.update(),  # aug_excluded set later (choices don't exist until scan)
     ]
-    # Label mapping + head mode: DON'T push into the dropdowns now — the map
-    # dropdowns' choices are still empty (built during Load folder), and setting
-    # head_mode here triggers a cascade of change events that can loop. Stash
-    # both and apply after the scan builds the choices.
+    # Label mapping + head mode + excluded classes: DON'T push into their
+    # widgets now — their choices are built during the scan, and Gradio rejects
+    # a value not in the (currently empty) choices. Stash and apply after scan.
     S["_pending_cfg_map"] = {
         "labels": cfg.get("label_names", []),
         "values": list(mv),
         "head_mode": cfg.get("head_mode"),
+        "excluded": ag.get("excluded", []),
     }
     for i in range(N):
         updates.append(gr.update())   # leave map dropdowns untouched for now
 
-    note = ""
-    if mv:
-        note = "<br>Label mapping will be applied after you click <b>Load folder</b>."
     status = _cfg_card(f"✅ Loaded config from<br>{load_path.strip()}"
-                       f"<br>Click <b>Load folder</b> to scan with these settings.{note}",
+                       "<br>Scanning the data folder to apply label mapping…",
                        "#2e7d32")
     return (status, *updates)
 
@@ -3041,9 +3045,10 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
 
     # Load folder → scan user's own directories
     scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
-                 ).then(apply_pending_cfg_map, [head_mode_dd, *map_dds], [head_mode_dd, *map_dds]
                  ).then(_update_excluded_choices,
                         [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
+                 ).then(apply_pending_cfg_map, [head_mode_dd, *map_dds],
+                        [head_mode_dd, aug_excluded_in, *map_dds]
                  ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
                  ).then(load_and_report_val,
                         [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in],
@@ -3139,7 +3144,21 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         *map_dds]
     cfg_load_btn.click(load_training_config, [cfg_path_in], _cfg_load_outputs) \
                 .then(lambda on: gr.update(visible=on), [sep_val_cb], [sep_val_grp]) \
-                .then(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp])
+                .then(lambda on: gr.update(visible=on), [pp_toggle], [pp_grp]) \
+                .then(do_scan_and_preview,
+                      [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds],
+                      scan_outputs) \
+                .then(_update_excluded_choices,
+                      [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in) \
+                .then(apply_pending_cfg_map, [head_mode_dd, *map_dds],
+                      [head_mode_dd, aug_excluded_in, *map_dds]) \
+                .then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed) \
+                .then(load_and_report_val,
+                      [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in],
+                      [scan_st, vid_list_html]) \
+                .then(build_aug_preview_html,
+                      [head_mode_dd, aug_mult_in, aug_excluded_in, *map_dds],
+                      aug_preview_html)
 
     # Training — first pull the mapper's current state straight from the DOM
     # into lm_bridge (so the mapping is guaranteed present even if the async
