@@ -16,8 +16,7 @@ Pretrained models are available on HuggingFace: [yiheng266/animal-social-models]
 
 ## Data Availability
 
-The video dataset used in this paper is not publicly available due to privacy constraints.  
-However, the code and models can be applied to your own videos in the same format.
+The video dataset used in this paper is publicly available.
 
 ---
 
