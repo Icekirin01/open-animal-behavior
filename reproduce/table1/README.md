@@ -39,10 +39,11 @@ Videos are pre-assigned into folders `1/`, `2/`, `3/`. Each fold uses one folder
 | Fold 2 | `2` | `1 3` |
 | Fold 3 | `3` | `1 2` |
 
-## Setup
+
+## Requirements
 
 ```bash
-pip install -r requirements.txt
+pip install torch torchvision transformers decord numpy pandas scikit-learn matplotlib seaborn tqdm
 ```
 
 ## Training
