@@ -81,9 +81,6 @@ figure**. Each figure's subfolder has its own README with the exact commands,
 and contains the training and evaluation scripts for that experiment plus the
 CSV files with every plotted data point.
 
-```bash
-pip install -r requirements.txt
-```
 
 Covered experiments: backbone comparison, per-behavior data efficiency
 (video-level subsampling), cross-domain transfer, and the public-benchmark
