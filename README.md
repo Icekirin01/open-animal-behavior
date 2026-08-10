@@ -100,13 +100,6 @@ standalone scripts in `reproduce/` serve that purpose.
 
 ---
 
-## Citation
-
-If you use CREAC, please cite the paper:
-
-> Tan, Y.-H., Ahmad, H., Chen, P.-C., Peng, K.-H., Lin, Y.-C., Kuo, T.-H., &
-> Lo, C.-C. (2025). *CREAC: A Cross-species Retrainable Animal behavior
-> Classifier.*
 
 ## License
 
