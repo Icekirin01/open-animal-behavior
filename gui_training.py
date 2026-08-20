@@ -8,7 +8,7 @@ DEFAULT_OUTPUT_DIR = "/content/drive/My Drive/trained_models/"
 MAX_LABELS = 15  # pre-built dropdown slots
 # ==================== END OF EDITS ====================
 
-import os, json, numpy as np, torch, torch.nn as nn, torch.optim as optim
+import os, json, threading, numpy as np, torch, torch.nn as nn, torch.optim as optim
 import precrop
 import gradio as gr, pandas as pd, random, shutil, time, traceback
 from PIL import Image, ImageFilter
@@ -398,11 +398,24 @@ class SlidingWindowDataset(Dataset):
 
 S = {"model":None,"cfg":None,"scan_data":None,"label_names":[],"cur_vf":None,"cur_vr":None,
      "_cursor_data":json.dumps({"T":0,"names":[],"labels":[]}),"train_log":[],"split_indices":{"train":[],"val":[]},
-     "_cancel_training":False}
+     "_cancel_training":False,"_mapper_vals":None,"_pending_cfg_map":None,
+     "_preview_lock":threading.RLock()}
 
 CLR_PAL=["#378ADD","#D85A30","#E24B4A","#7F77DD","#1D9E75","#BA7517",
          "#534AB7","#993C1D","#639922","#D4537E","#185FA5","#854F0B","#A32D2D"]
 U=gr.update()
+
+
+def reset_preview_reader():
+    """Drop the cached reader before a new scan changes its backing dataset."""
+    with S["_preview_lock"]:
+        old = S.get("cur_vr")
+        S["cur_vr"] = None
+        S["cur_vf"] = None
+        if old is not None:
+            del old
+            import gc
+            gc.collect()
 
 def get_clr(i,name):
     if name.lower() in ("other","others"): return "#FFFFFF","rgba(180,180,180,0.9)"
@@ -618,7 +631,7 @@ def build_mapping_choices_pt(idx, data_labels, pretrained_names):
         else: default = choices[0]
     return choices, default
 
-def build_mapping_choices_new(idx, data_labels, all_mappings):
+def build_mapping_choices_new(idx, data_labels, all_mappings, extra_targets=None):
     """New head: choices = keep / merge into available / (→ Other if needed) / Exclude."""
     has_other = any(n.lower() in ("other","others") for n in data_labels)
     consumed = set()
@@ -630,6 +643,16 @@ def build_mapping_choices_new(idx, data_labels, all_mappings):
     for j, nm in enumerate(data_labels):
         if j == idx or j in consumed: continue
         choices.append(f"→ merge into {nm}")
+    inferred_targets = []
+    for value in all_mappings.values():
+        if "merge into" in str(value):
+            inferred_targets.append(str(value).replace("→ merge into ", ""))
+    for nm in list(extra_targets or []) + inferred_targets:
+        if (nm and nm not in data_labels
+                and nm.lower() not in ("other", "others", "exclude")):
+            choice = f"→ merge into {nm}"
+            if choice not in choices:
+                choices.append(choice)
     if not has_other: choices.append("→ Other")
     choices.append("→ Exclude")
     return choices
@@ -690,7 +713,18 @@ def compute_label_map_from_dropdowns(mode, dd_values, data_labels, pretrained_na
         elif v == "→ Exclude":
             exclude_list.append(i)
 
-    new_names = [nm for nm in data_labels if nm in kept_set]
+    kept_other = [nm for nm in data_labels
+                  if nm in kept_set and nm.lower() in ("other", "others")]
+    new_names = [nm for nm in data_labels
+                 if nm in kept_set and nm.lower() not in ("other", "others")]
+    # Visual-mapper classes may be newly created/renamed and therefore do not
+    # exist as CSV columns.  Preserve those explicit merge targets as genuine
+    # training classes instead of silently falling back to class 0/Other.
+    for target in merge_targets.values():
+        if (target not in new_names
+                and target.lower() not in ("other", "others", "exclude")):
+            new_names.append(target)
+    new_names.extend(nm for nm in kept_other if nm not in new_names)
     if other_list:
         has_o = any(c.lower() in ("other","others") for c in new_names)
         if not has_o: new_names.append("Other")
@@ -714,6 +748,43 @@ def compute_label_map_from_dropdowns(mode, dd_values, data_labels, pretrained_na
             label_map[i] = 0
 
     return new_names, label_map
+
+
+def cache_mapping_values(head_mode, data_labels, values, classes=None):
+    """Store the resolved mapping in one canonical Python-side snapshot.
+
+    Hidden dropdowns and the visual mapper are views of this state.  Keeping a
+    label-set and head-mode key prevents a mapping from an old scan/config from
+    leaking into a different dataset or head type.
+    """
+    vals = list(values[:len(data_labels)])
+    previous = S.get("_mapper_vals") or {}
+    state = {
+        "labels": list(data_labels),
+        "head_mode": head_mode,
+        "values": vals,
+    }
+    if classes is not None:
+        state["classes"] = list(classes)
+    elif (previous.get("labels") == list(data_labels)
+          and previous.get("head_mode") == head_mode
+          and previous.get("classes") is not None):
+        state["classes"] = list(previous["classes"])
+    S["_mapper_vals"] = state
+    return vals
+
+
+def effective_mapping_values(head_mode, supplied, data_labels):
+    """Return the canonical mapping when it belongs to the current dataset."""
+    vals = list(supplied[:len(data_labels)])
+    state = S.get("_mapper_vals") or {}
+    cached = state.get("values") or []
+    if (state.get("labels") == list(data_labels)
+            and state.get("head_mode") == head_mode
+            and len(cached) == len(data_labels)
+            and all(v is not None for v in cached)):
+        return list(cached)
+    return vals
 
 # ====================== Mapped Timeline ======================
 
@@ -788,11 +859,7 @@ def build_aug_preview_html(head_mode, aug_mult, aug_excluded, *dd_vals):
         return "<p style='color:#aaa;font-size:12px;'>Load data to see per-behavior frames</p>"
     data_labels = S["label_names"]
     pretrained = S["cfg"]["class_names"] if S["cfg"] else []
-    vals = list(dd_vals[:len(data_labels)])
-    mv = S.get("_mapper_vals")
-    if mv and mv.get("labels") == list(data_labels) and mv.get("values") \
-       and all(v is not None for v in mv["values"]):
-        vals = list(mv["values"])
+    vals = effective_mapping_values(head_mode, dd_vals, data_labels)
     new_names, label_map = compute_label_map_from_dropdowns(
         head_mode, vals, data_labels, pretrained)
 
@@ -861,7 +928,8 @@ def build_label_dist_html():
     for i,nm in enumerate(all_label_names):
         c=gcounts.get(i,0); pct=100*c/max(total_frames,1); clr,_=get_clr(i,nm)
         bar_clr="#ddd" if clr=="#FFFFFF" else clr
-        html+=f"<div style='margin-bottom:5px;'><div style='display:flex;align-items:center;gap:6px;margin-bottom:1px;'><span style='display:inline-block;width:8px;height:8px;border-radius:2px;background:{bar_clr};flex-shrink:0;{("border:1px solid #ccc;" if clr=="#FFFFFF" else "")}'></span><span style='font-size:12px;font-weight:500;flex:1;'>{nm}</span><span style='font-size:11px;color:#888;flex-shrink:0;'>{c:,} fr · {pct:.1f}%</span></div><div style='height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden;margin-left:14px;'><div style='width:{max(pct,0.3):.1f}%;height:100%;background:{bar_clr};border-radius:3px;'></div></div></div>"
+        border="border:1px solid #ccc;" if clr=="#FFFFFF" else ""
+        html+=f"<div style='margin-bottom:5px;'><div style='display:flex;align-items:center;gap:6px;margin-bottom:1px;'><span style='display:inline-block;width:8px;height:8px;border-radius:2px;background:{bar_clr};flex-shrink:0;{border}'></span><span style='font-size:12px;font-weight:500;flex:1;'>{nm}</span><span style='font-size:11px;color:#888;flex-shrink:0;'>{c:,} fr · {pct:.1f}%</span></div><div style='height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden;margin-left:14px;'><div style='width:{max(pct,0.3):.1f}%;height:100%;background:{bar_clr};border-radius:3px;'></div></div></div>"
     html+="</div>"
     return html
 
@@ -1090,6 +1158,7 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     if n_misaligned:
         print(f"ℹ️ Realigned {n_misaligned}/{len(matched)} file(s) to global label order: {all_label_names}")
 
+    reset_preview_reader()
     S["scan_data"]=matched; S["label_names"]=all_label_names
     compute_split(val_pct, val_seed)
     dist=build_label_dist_html()
@@ -1102,15 +1171,32 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
 
     pretrained_names = S["cfg"]["class_names"] if S["cfg"] else []
 
-    # Build mapping dropdown updates
+    # Build mapping dropdown updates.  A rescan (including the automatic scan
+    # immediately before training) must preserve the canonical mapping instead
+    # of silently resetting everything to the defaults.
+    cached = S.get("_mapper_vals") or {}
+    reuse_values = None
+    if (cached.get("labels") == list(all_label_names)
+            and cached.get("head_mode") == head_mode
+            and len(cached.get("values") or []) == len(all_label_names)):
+        reuse_values = list(cached["values"])
+
+    parsed = {}
+    if reuse_values is not None:
+        for i, value in enumerate(reuse_values):
+            parsed[str(i)] = parse_mapping_value(value, all_label_names)
+
     dd_updates = []
     for i in range(N):
         if i < len(all_label_names):
             if head_mode == "Pretrain head" and pretrained_names:
                 choices, default = build_mapping_choices_pt(i, all_label_names, pretrained_names)
             else:
-                choices = build_mapping_choices_new(i, all_label_names, {})
+                choices = build_mapping_choices_new(
+                    i, all_label_names, parsed, cached.get("classes", []))
                 default = choices[0]
+            if reuse_values is not None and reuse_values[i] in choices:
+                default = reuse_values[i]
             dd_updates.append(gr.update(visible=False, choices=choices, value=default, label=all_label_names[i]))
         else:
             dd_updates.append(gr.update(visible=False, choices=[], value=None))
@@ -1122,6 +1208,7 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     # Preview first video with initial mapping
     vf=matched[0]["vf"]
     dd_values = [u["value"] for u in dd_updates[:len(all_label_names)]]
+    cache_mapping_values(head_mode, all_label_names, dd_values)
     new_names, label_map = compute_label_map_from_dropdowns(head_mode, dd_values, all_label_names, pretrained_names)
     tl, cdata = build_mapped_timeline(vf, new_names, label_map)
     summary = build_mapping_summary_html(head_mode, dd_values, all_label_names, pretrained_names)
@@ -1267,14 +1354,14 @@ MAPPER_JS = r"""
     const id="r"+(++seq);
     const ex=right.findIndex(r=>r.kind==="exclude");
     right.splice(ex<0?right.length:ex,0,{id,name:"NewClass",kind:"class"});
-    render(); edit(id);
+    render(); push(); edit(id);
   }
   function delNode(id){
     const n=right.find(r=>r.id===id);
     if(!n||n.kind!=="class") return;
     right=right.filter(r=>r.id!==id);
     Object.keys(links).forEach(k=>{ if(links[k]===id) delete links[k]; });
-    render();
+    render(); push();
   }
   function edit(id){
     const n=right.find(r=>r.id===id); if(!n||n.kind!=="class"||LOCKED) return;
@@ -1283,7 +1370,7 @@ MAPPER_JS = r"""
     const inp=document.createElement("input");
     inp.className="lm-rename"; inp.value=n.name;
     span.replaceWith(inp); inp.focus(); inp.select();
-    const commit=()=>{ const v=inp.value.trim(); if(v) n.name=v; render(); };
+    const commit=()=>{ const v=inp.value.trim(); if(v) n.name=v; render(); push(); };
     inp.onblur=commit;
     inp.onkeydown=e=>{ e.stopPropagation();
       if(e.key==="Enter") inp.blur();
@@ -1292,7 +1379,7 @@ MAPPER_JS = r"""
     inp.onpointerdown=e=>e.stopPropagation();
   }
   function pick(i){ pending=(pending===i)?null:i; render(); }
-  function connect(rid){ if(pending===null) return; links[pending]=rid; pending=null; render(); }
+  function connect(rid){ if(pending===null) return; links[pending]=rid; pending=null; render(); push(); }
 
   function startDrag(e,i){
     if(e.button!==undefined&&e.button!==0) return;
@@ -1317,7 +1404,9 @@ MAPPER_JS = r"""
     const t=nodeUnder(e), from=dragFrom; dragFrom=null;
     document.querySelectorAll(".lm-node").forEach(n=>n.classList.remove("drop","dragging"));
     if(t&&from!==null&&justDragged) links[from]=t.dataset.rid;
-    render(); setTimeout(()=>{justDragged=false;},0);
+    render();
+    if(t&&from!==null&&justDragged) push();
+    setTimeout(()=>{justDragged=false;},0);
   }
 
   function render(){
@@ -1364,7 +1453,6 @@ MAPPER_JS = r"""
              :'<span style="color:#2e7d32">✓ All labels mapped</span>');
     }
     document.getElementById("lm-hint").innerHTML=hint;
-    push();
   }
 
   function draw(dragEvt){
@@ -1387,7 +1475,7 @@ MAPPER_JS = r"""
       p.style.pointerEvents="stroke"; p.style.cursor="pointer";
       p.onmouseenter=()=>p.setAttribute("stroke","var(--line-hi)");
       p.onmouseleave=()=>p.setAttribute("stroke","var(--line)");
-      p.onclick=()=>{ delete links[li]; render(); };
+      p.onclick=()=>{ delete links[li]; render(); push(); };
       svg.appendChild(p);
     });
     if(dragFrom!==null&&dragEvt){
@@ -1441,13 +1529,16 @@ def _mapper_init_js(data_labels, head_mode, pretrained_names, dd_values):
     if is_pre:
         classes = [n for n in pretrained_names if n.lower() not in ("other", "others")]
     else:
-        keep = []
+        classes = []
         for i, nm in enumerate(data_labels):
             v = str(dd_values[i]) if i < len(dd_values) else "keep"
             if "(keep)" in v or v == "keep":
-                keep.append(nm)
-        classes = keep or [n for n in data_labels
-                           if n.lower() not in ("other", "others")]
+                if nm not in classes:
+                    classes.append(nm)
+            elif "merge into" in v:
+                target = v.replace("→ merge into ", "")
+                if target.lower() not in ("other", "others") and target not in classes:
+                    classes.append(target)
 
     # "Other" is a fixed box below, so never emit it as a normal class too
     classes = [c for c in classes if c.lower() not in ("other", "others")]
@@ -1522,7 +1613,10 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
 
     def route_to_other():
         if is_pre:
-            return "→ Other"                       # pretrain always has this
+            # Prefer the pretrained head's real Other/others class.  "→ Other"
+            # is only a synthetic choice when the CSV has no Other column.
+            return next((name for name in pretrained_names
+                         if name.lower() in ("other", "others")), "→ Other")
         return "→ Other" if not has_other else f"→ merge into {other_name}"
 
     out = []
@@ -1568,7 +1662,8 @@ def apply_mapper_bridge(bridge_json, head_mode, *dd_vals):
     # not the dropdowns (which may not have finished syncing when the user
     # clicks Start training). Keyed by the current label set for safety.
     resolved = [u.get("value") if isinstance(u, dict) else None for u in out]
-    S["_mapper_vals"] = {"labels": list(data_labels), "values": resolved[:n]}
+    cache_mapping_values(head_mode, data_labels, resolved[:n],
+                         classes=payload.get("classes", []))
     return tuple(out)
 
 
@@ -1611,7 +1706,9 @@ def on_mapping_change(head_mode, *dd_vals):
         dd_updates = []
         for i in range(N):
             if i < n:
-                choices = build_mapping_choices_new(i, data_labels, mappings)
+                custom_targets = (S.get("_mapper_vals") or {}).get("classes", [])
+                choices = build_mapping_choices_new(
+                    i, data_labels, mappings, custom_targets)
                 current = cur_vals[i]
                 if current in choices:
                     dd_updates.append(gr.update(visible=False, choices=choices, value=current))
@@ -1622,6 +1719,7 @@ def on_mapping_change(head_mode, *dd_vals):
 
     # Compute final mapping + rebuild timeline
     final_vals = [dd_updates[i].get("value", cur_vals[i]) if isinstance(dd_updates[i], dict) and "value" in dd_updates[i] else cur_vals[i] for i in range(n)]
+    cache_mapping_values(head_mode, data_labels, final_vals)
     new_names, label_map = compute_label_map_from_dropdowns(head_mode, final_vals, data_labels, pretrained_names)
 
     vf = S["cur_vf"]
@@ -1644,22 +1742,24 @@ def _get_frame(vf, fi):
     if S.get("_training_active"): return None
     d=next((x for x in S["scan_data"] if x["vf"]==vf),None)
     if not d: return None
-    try:
-        if S["cur_vf"]!=vf or S["cur_vr"] is None:
-            # IMPORTANT: explicitly release the old VideoReader before opening a
-            # new one. decord's VideoReader holds a C++ frame cache + open file
-            # descriptor that Python's GC may not free promptly — without this,
-            # switching between videos in the preview will leak hundreds of MB
-            # per switch and crash Colab on RAM.
-            old = S.get("cur_vr")
-            if old is not None:
-                S["cur_vr"] = None
-                del old
-                import gc; gc.collect()
-            S["cur_vr"]=VideoReader(d["vp"],ctx=cpu(0)); S["cur_vf"]=vf
-        T=len(S["cur_vr"]); fi=max(0,min(int(fi),T-1))
-        return S["cur_vr"][fi].asnumpy()
-    except: S["cur_vr"]=None; S["cur_vf"]=None; return None
+    with S["_preview_lock"]:
+        try:
+            if S["cur_vf"]!=vf or S["cur_vr"] is None:
+                # Explicitly release the old VideoReader before opening a new
+                # one.  The lock prevents a simultaneous preview callback from
+                # deleting the reader while this callback is decoding a frame.
+                old = S.get("cur_vr")
+                if old is not None:
+                    S["cur_vr"] = None
+                    del old
+                    import gc; gc.collect()
+                S["cur_vr"]=VideoReader(d["vp"],ctx=cpu(0)); S["cur_vf"]=vf
+            T=len(S["cur_vr"]); fi=max(0,min(int(fi),T-1))
+            return S["cur_vr"][fi].asnumpy()
+        except Exception as e:
+            print(f"⚠️ Preview failed for {vf}: {e}")
+            S["cur_vr"]=None; S["cur_vf"]=None
+            return None
 
 def _preview_video_mapped(vf, head_mode, dd_vals):
     """Preview video with current mapping applied."""
@@ -2223,13 +2323,9 @@ def run_training(repo,mname,vdir,ldir,odir,head_mode,
     # lag behind the mapper's JSON bridge when the user clicks Start training
     # right after dragging, and reading stale (all-keep) dropdowns would train
     # un-merged classes.
-    vals = list(dd_vals[:len(data_labels)])
-    mv = S.get("_mapper_vals")
-    if mv and mv.get("labels") == list(data_labels) and mv.get("values"):
-        cached = mv["values"]
-        if len(cached) == len(data_labels) and all(v is not None for v in cached):
-            vals = list(cached)
-            print("🏷️ Using label mapping from the visual mapper")
+    vals = effective_mapping_values(head_mode, dd_vals, data_labels)
+    if vals != list(dd_vals[:len(data_labels)]):
+        print("🏷️ Using canonical label mapping")
     new_names, label_map = compute_label_map_from_dropdowns(head_mode, vals, data_labels, pretrained_names)
     new_nc = len(new_names)
 
@@ -2664,6 +2760,8 @@ def save_training_config(save_path, head_mode,
     """Serialize the whole training GUI state to a JSON file (on Drive or
     anywhere writable). Returns a status HTML string."""
     import json as _json
+    saved_map_values = effective_mapping_values(
+        head_mode, map_dds, S.get("label_names", []))
     cfg = {
         "_format": "creac_training_config_v1",
         "head_mode": head_mode,
@@ -2678,7 +2776,7 @@ def save_training_config(save_path, head_mode,
                 "brightness": aug_bright, "contrast": aug_contrast,
                 "saturation": aug_sat, "blur": aug_blur, "tdrop": aug_tdrop,
                 "mult": aug_mult, "excluded": list(aug_excluded or [])},
-        "label_map_values": [v for v in map_dds],
+        "label_map_values": saved_map_values,
         "label_names": S.get("label_names", []),
     }
     if not save_path or not save_path.strip():
@@ -2706,31 +2804,81 @@ def apply_pending_cfg_map(head_mode, *dd_vals):
     S["_pending_cfg_map"]). Only applies if the config's labels match the
     freshly scanned labels (otherwise the config is for a different dataset and
     we leave the scan's own values). Returns
-    (head_mode_update, excluded_update, *map_dd_updates)."""
+    (status_update, head_mode_update, excluded_update, *map_dd_updates)."""
     N = MAX_LABELS
     pend = S.get("_pending_cfg_map")
     data_labels = S.get("label_names", [])
-    if not pend or pend.get("labels") != list(data_labels):
-        # different dataset (or nothing pending) → keep whatever the scan set
-        S["_pending_cfg_map"] = None
-        return (gr.update(), gr.update(), *[gr.update() for _ in range(N)])
-    hm = pend.get("head_mode")
-    hm_update = gr.update(value=hm) if hm else gr.update()
-    # excluded classes: keep only those that are valid training-class names now
-    exc = pend.get("excluded", []) or []
-    exc_update = gr.update(value=exc)
+    if not pend:
+        return (gr.update(), gr.update(), gr.update(),
+                *[gr.update() for _ in range(N)])
+
+    saved_labels = list(pend.get("labels") or [])
+    if saved_labels != list(data_labels):
+        # A harmless column-order difference can be normalized by label name.
+        if (len(saved_labels) == len(set(saved_labels))
+                and len(data_labels) == len(set(data_labels))
+                and set(saved_labels) == set(data_labels)):
+            old_values = list(pend.get("values") or [])
+            by_label = {name: old_values[i] if i < len(old_values) else None
+                        for i, name in enumerate(saved_labels)}
+            pend["values"] = [by_label.get(name) for name in data_labels]
+            pend["labels"] = list(data_labels)
+        else:
+            # Different dataset: keep the scan defaults and tell the user why
+            # the mapping was intentionally not applied.
+            missing = [name for name in saved_labels if name not in data_labels]
+            added = [name for name in data_labels if name not in saved_labels]
+            detail = []
+            if missing: detail.append("missing: " + ", ".join(missing))
+            if added: detail.append("new: " + ", ".join(added))
+            status = _cfg_card(
+                "⚠️ Config settings loaded, but mapping was not applied because "
+                "the scanned behavior labels differ"
+                + ("<br>" + " · ".join(detail) if detail else ""), "#b26a00")
+            S["_pending_cfg_map"] = None
+            return (status, gr.update(), gr.update(),
+                    *[gr.update() for _ in range(N)])
+
+    hm = pend.get("head_mode") or head_mode
+    hm_update = gr.update(value=hm)
     vals = pend.get("values", [])
+    resolved_vals = [
+        vals[i] if i < len(vals) and vals[i] is not None
+        else (dd_vals[i] if i < len(dd_vals) else None)
+        for i in range(len(data_labels))
+    ]
+
+    pretrained_names = S["cfg"]["class_names"] if S.get("cfg") else []
+    parsed = {str(i): parse_mapping_value(value, data_labels)
+              for i, value in enumerate(resolved_vals)}
     out = []
     for i in range(N):
-        if i < len(vals) and vals[i] is not None:
-            out.append(gr.update(value=vals[i]))
-        else:
+        if i >= len(data_labels):
             out.append(gr.update())
-    S["_mapper_vals"] = {"labels": list(data_labels),
-                         "values": [vals[i] if i < len(vals) else None
-                                    for i in range(len(data_labels))]}
+            continue
+        value = resolved_vals[i]
+        if hm == "Pretrain head" and pretrained_names:
+            choices, default = build_mapping_choices_pt(
+                i, data_labels, pretrained_names)
+        else:
+            choices = build_mapping_choices_new(i, data_labels, parsed)
+            default = choices[0]
+        out.append(gr.update(choices=choices,
+                             value=value if value in choices else default))
+        resolved_vals[i] = value if value in choices else default
+
+    # Excluded classes are restored only after their valid choices can be
+    # derived from the scanned labels and loaded mapping.
+    new_names, _ = compute_label_map_from_dropdowns(
+        hm, resolved_vals, data_labels, pretrained_names)
+    requested_exc = pend.get("excluded", []) or []
+    valid_exc = [name for name in requested_exc if name in new_names]
+    exc_update = gr.update(choices=list(new_names), value=valid_exc)
+
+    cache_mapping_values(hm, data_labels, resolved_vals)
     S["_pending_cfg_map"] = None
-    return (hm_update, exc_update, *out)
+    status = _cfg_card("✅ Config mapping applied to the scanned labels", "#2e7d32")
+    return (status, hm_update, exc_update, *out)
 
 
 def load_training_config(load_path):
@@ -2741,7 +2889,8 @@ def load_training_config(load_path):
     N = MAX_LABELS
     # helper to build the full update tuple in a fixed order
     def blanks():
-        return [gr.update() for _ in range(31 + N)]  # 31 scalar fields + N map dds
+        # Outputs after cfg_status: 29 scalar widgets + N mapping dropdowns.
+        return [gr.update() for _ in range(29 + N)]
 
     if not load_path or not os.path.isfile(load_path.strip()):
         return (_cfg_card("❌ Config file not found", "#e74c3c"), *blanks())
@@ -2774,6 +2923,9 @@ def load_training_config(load_path):
     # Label mapping + head mode + excluded classes: DON'T push into their
     # widgets now — their choices are built during the scan, and Gradio rejects
     # a value not in the (currently empty) choices. Stash and apply after scan.
+    # The loaded config starts a new mapping transaction; do not let a prior
+    # dataset/config's cached mapper classes participate in its normalization.
+    S["_mapper_vals"] = None
     S["_pending_cfg_map"] = {
         "labels": cfg.get("label_names", []),
         "values": list(mv),
@@ -3002,10 +3154,11 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     # Scan outputs: status, dist, nav, N dropdown updates, vid_dd, img, info, tl, scrubber, cursor, vid_list, summary
     scan_outputs = [scan_st, label_dist_html, nav_md, *map_dds, vid_dd,
                     frame_img, info_html, timeline_html, scrubber, cursor_state, vid_list_html, mapping_summary]
+    map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
 
     # Class-balancing excluded-classes checkbox: keep choices in sync with current
     # training classes (new_names). Defined early so scan_d.click().then(...) can reference it.
-    def _update_excluded_choices(head_mode, *dd_vals):
+    def _excluded_choices_update(head_mode, *dd_vals, use_default=False):
         data_labels = S["label_names"]
         pretrained_names = S["cfg"]["class_names"] if S["cfg"] else []
         if not data_labels:
@@ -3016,8 +3169,16 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         prev = list(prev) if prev else []
         default_excluded = [n for n in new_names if n.lower() in ("other","others")]
         kept = [v for v in prev if v in new_names]
-        value = kept if kept else default_excluded
+        value = default_excluded if use_default and not kept else kept
         return gr.update(choices=list(new_names), value=value)
+
+    def _update_excluded_choices(head_mode, *dd_vals):
+        """Sync choices while preserving an intentional empty selection."""
+        return _excluded_choices_update(head_mode, *dd_vals, use_default=False)
+
+    def _initialize_excluded_choices(head_mode, *dd_vals):
+        """Use Other as the initial class-balancing exclusion after a scan."""
+        return _excluded_choices_update(head_mode, *dd_vals, use_default=True)
 
     # Demo button → download from HF + auto-scan (same outputs as Load folder, paths stay untouched)
     # Seed the visual mapper (JS) from Python state
@@ -3039,17 +3200,22 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
       }
     """)
 
+    _aug_prev_inputs = [head_mode_dd, aug_mult_in, aug_excluded_in, *map_dds]
+
     demo_btn.click(load_demo_training, [repo_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
-                   ).then(_update_excluded_choices,
+                   ).then(_initialize_excluded_choices,
                           [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
-                   ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed)
+                   ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
+                   ).then(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
 
     # Load folder → scan user's own directories
     scan_d.click(do_scan_and_preview, [vdir_in, ldir_in, vr_in, val_seed_in, head_mode_dd, *map_dds], scan_outputs
-                 ).then(_update_excluded_choices,
+                 ).then(_initialize_excluded_choices,
                         [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
                  ).then(apply_pending_cfg_map, [head_mode_dd, *map_dds],
-                        [head_mode_dd, aug_excluded_in, *map_dds]
+                        [cfg_status, head_mode_dd, aug_excluded_in, *map_dds]
+                 ).then(on_mapping_change, [head_mode_dd, *map_dds],
+                        map_change_outputs
                  ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
                  ).then(load_and_report_val,
                         [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in],
@@ -3058,48 +3224,42 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                        [head_mode_dd, aug_mult_in, aug_excluded_in, *map_dds],
                        aug_preview_html)
 
-    # Head mode change → rebuild all mapping dropdowns + timeline + summary
-    map_change_outputs = [*map_dds, timeline_html, cursor_state, mapping_summary]
-    head_mode_dd.change(on_head_mode_change, [head_mode_dd, *map_dds], map_change_outputs)
+    # Head mode is a real user action.  Keep its dependent updates in one
+    # serial chain so old and new mapping states cannot finish out of order.
+    head_mode_dd.input(
+        on_head_mode_change, [head_mode_dd, *map_dds], map_change_outputs
+    ).then(
+        _update_excluded_choices,
+        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in
+    ).then(
+        _seed_mapper, [head_mode_dd, *map_dds], lm_seed
+    ).then(
+        build_aug_preview_html, _aug_prev_inputs, aug_preview_html
+    )
 
     # Visual mapper → dropdowns → (existing) mapping refresh chain
     lm_bridge.change(apply_mapper_bridge, [lm_bridge, head_mode_dd, *map_dds], map_dds) \
              .then(on_mapping_change, [head_mode_dd, *map_dds], map_change_outputs) \
              .then(_update_excluded_choices,
-                   [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
+                   [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in) \
+             .then(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
 
-    head_mode_dd.change(_seed_mapper, [head_mode_dd, *map_dds], lm_seed)
-
-    # Any mapping dropdown change → rebuild others + timeline + summary
-    for dd in map_dds:
-        dd.change(on_mapping_change, [head_mode_dd, *map_dds], map_change_outputs)
-
-    # Keep excluded-classes checkbox in sync on mapping / head-mode changes
-    head_mode_dd.change(_update_excluded_choices,
-                        [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
-    for dd in map_dds:
-        dd.change(_update_excluded_choices,
-                  [head_mode_dd, *map_dds, aug_excluded_in], aug_excluded_in)
-
-    # Per-behavior frames preview — refresh on multiplier / excluded / mapping
-    _aug_prev_inputs = [head_mode_dd, aug_mult_in, aug_excluded_in, *map_dds]
-    aug_mult_in.change(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
-    aug_excluded_in.change(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
-    head_mode_dd.change(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
-    for dd in map_dds:
-        dd.change(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
+    # Per-behavior frames preview — direct user changes only.  Programmatic
+    # mapping changes are handled explicitly by the serial chains above.
+    aug_mult_in.input(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
+    aug_excluded_in.input(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
 
     # Val ratio or val seed change → recompute split
-    vr_in.change(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
-    val_seed_in.change(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
+    vr_in.input(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
+    val_seed_in.input(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
 
     # Video dropdown → preview with mapping
-    vid_dd.change(on_vid_change,[vid_dd, head_mode_dd, *map_dds],
-                  [frame_img,info_html,timeline_html,scrubber,cursor_state,vid_list_html,nav_md])
+    vid_dd.input(on_vid_change,[vid_dd, head_mode_dd, *map_dds],
+                 [frame_img,info_html,timeline_html,scrubber,cursor_state,vid_list_html,nav_md])
 
     # Scrubber
     scrubber.input(fn=None,inputs=[scrubber,cursor_state],outputs=[scrubber],js=CURSOR_JS)
-    scrubber.change(on_scrub,[scrubber, head_mode_dd, *map_dds],[frame_img,info_html])
+    scrubber.input(on_scrub,[scrubber, head_mode_dd, *map_dds],[frame_img,info_html])
 
     # Nav
     prev_btn.click(lambda hm,*dd: do_nav("prev",hm,*dd),[head_mode_dd,*map_dds],
@@ -3113,14 +3273,14 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
         if not on:
             S["_val_preview"] = None
         return gr.update(visible=on), build_video_list_html(active_vf=S.get("cur_vf"))
-    sep_val_cb.change(_on_sep_toggle, [sep_val_cb], [sep_val_grp, vid_list_html])
+    sep_val_cb.input(_on_sep_toggle, [sep_val_cb], [sep_val_grp, vid_list_html])
 
     # YOLO preprocess panel
     def _on_pp_toggle(on):
         if not on:
             S["_pp_dirs"] = {}   # stop reusing old cropped clips
         return gr.update(visible=on)
-    pp_toggle.change(_on_pp_toggle, [pp_toggle], [pp_grp])
+    pp_toggle.input(_on_pp_toggle, [pp_toggle], [pp_grp])
     pp_btn.click(run_preprocess_training,
                  [pp_yolo_in, vdir_in, pp_drive_in, pp_pad_in, sep_val_cb, val_vdir_in],
                  [progress_html, pp_btn])
@@ -3207,4 +3367,5 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
       }
     """)
 
-demo.launch(debug=True, share=True)
+if __name__ == "__main__":
+    demo.launch(debug=True, share=True)
