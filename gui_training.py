@@ -566,6 +566,59 @@ def compute_split(val_pct, seed=1337):
     else: tidx=list(range(n)); vidx=[]
     S["split_indices"]={"train":tidx,"val":vidx}
 
+
+def get_preview_entries():
+    """Return train/ratio-val and separate-val videos in one navigation list.
+
+    The key is deliberately independent of the filename because train and val
+    folders commonly contain identical basenames.
+    """
+    items = []
+    train_idxs = set(S.get("split_indices", {}).get("train", []))
+    val_idxs = set(S.get("split_indices", {}).get("val", []))
+    sep_active = bool(S.get("_sep_val_active"))
+    for i, entry in enumerate(S.get("scan_data") or []):
+        role = "VAL" if not sep_active and i in val_idxs else "TRAIN"
+        if i not in train_idxs and i not in val_idxs:
+            role = "TRAIN"
+        items.append({"key": f"data:{i}", "role": role, "entry": entry})
+    if sep_active:
+        for i, entry in enumerate(S.get("_val_preview") or []):
+            items.append({"key": f"sepval:{i}", "role": "VAL", "entry": entry})
+    return items
+
+
+def find_preview_entry(key):
+    """Resolve a preview key; accept a legacy filename as a safe fallback."""
+    for item in get_preview_entries():
+        if item["key"] == key:
+            return item
+    for item in get_preview_entries():
+        if item["entry"].get("vf") == key:
+            return item
+    return None
+
+
+def preview_dropdown_update(value=None):
+    items = get_preview_entries()
+    choices = [(f"[{item['role']}] {item['entry']['vf']}", item["key"])
+               for item in items]
+    keys = [item["key"] for item in items]
+    selected = value if value in keys else (keys[0] if keys else None)
+    return gr.update(choices=choices, value=selected)
+
+
+def preview_nav_text(key=None):
+    items = get_preview_entries()
+    keys = [item["key"] for item in items]
+    if not items:
+        return "*Load data first*"
+    selected = key if key in keys else keys[0]
+    idx = keys.index(selected)
+    item = items[idx]
+    return (f"**[{item['role']}] {item['entry']['vf']}** — "
+            f"{idx + 1} / {len(items)} videos")
+
 def build_video_list_html(active_vf=None):
     if not S["scan_data"]: return "<p style='color:#aaa;font-size:12px;'>Load data first</p>"
     data=S["scan_data"]; tidx_set=set(S["split_indices"].get("train",[])); vidx_set=set(S["split_indices"].get("val",[]))
@@ -573,7 +626,8 @@ def build_video_list_html(active_vf=None):
     for i,d in enumerate(data):
         vf=d["vf"]; T=d["T"]; fps=d["fps"]; dur=T/fps if fps>0 else 0
         fmt_tag = "<span style='font-size:10px;padding:1px 5px;border-radius:3px;background:#EDE9FE;color:#5B21B6;font-weight:600;margin-left:4px;'>BORIS</span>" if d.get("is_boris") else ""
-        is_active=(vf==active_vf); is_val=(i in vidx_set)
+        preview_key=f"data:{i}"
+        is_active=(preview_key==active_vf); is_val=(i in vidx_set)
         bg="background:rgba(220,38,38,0.12);border-left:3px solid #dc2626;" if is_active else "background:transparent;border-left:3px solid transparent;"
         if is_val: role_tag="<span style='font-size:10px;padding:1px 5px;border-radius:3px;background:#FEF3C7;color:#92400E;font-weight:600;margin-left:6px;'>VAL</span>"
         elif i in tidx_set: role_tag="<span style='font-size:10px;padding:1px 5px;border-radius:3px;background:#D1FAE5;color:#065F46;font-weight:600;margin-left:6px;'>TRAIN</span>"
@@ -588,10 +642,16 @@ def build_video_list_html(active_vf=None):
     sep_val = S.get("_val_preview") if S.get("_sep_val_active") else None
     if sep_val:
         html2="<div style='max-height:160px;overflow-y:auto;border:1px solid var(--color-border-secondary);border-radius:8px;padding:4px;margin-top:6px;'>"
-        for d in sep_val:
+        for j,d in enumerate(sep_val):
             vf=d["vf"]; T=d["T"]; fps=d["fps"]; dur=T/fps if fps>0 else 0
             role_tag="<span style='font-size:10px;padding:1px 5px;border-radius:3px;background:#FEF3C7;color:#92400E;font-weight:600;margin-left:6px;'>VAL</span>"
-            html2+=f"<div style='border-radius:4px;padding:4px 8px;margin-bottom:1px;'><div style='display:flex;justify-content:space-between;align-items:center;'><span style='font-size:12px;color:var(--color-text-primary);font-weight:500;'>{vf}{role_tag}</span><span style='font-size:10px;color:var(--color-text-secondary);white-space:nowrap;'>{T} fr · {dur:.1f}s</span></div></div>"
+            is_active=(f"sepval:{j}"==active_vf)
+            bg=("background:rgba(220,38,38,0.12);border-left:3px solid #dc2626;"
+                if is_active else
+                "background:transparent;border-left:3px solid transparent;")
+            nc="#dc2626" if is_active else "var(--color-text-primary)"
+            nw="700" if is_active else "500"
+            html2+=f"<div style='{bg}border-radius:4px;padding:4px 8px;margin-bottom:1px;'><div style='display:flex;justify-content:space-between;align-items:center;'><span style='font-size:12px;color:{nc};font-weight:{nw};'>{vf}{role_tag}</span><span style='font-size:10px;color:var(--color-text-secondary);white-space:nowrap;'>{T} fr · {dur:.1f}s</span></div></div>"
         html2+="</div>"
         html = ("<div style='font-size:11px;font-weight:600;color:#065F46;margin-bottom:2px;'>Training folder</div>"
                 + html
@@ -791,8 +851,9 @@ def effective_mapping_values(head_mode, supplied, data_labels):
 def build_mapped_timeline(vf, mapped_names, label_map):
     """Build timeline HTML using mapped labels. None = excluded (shown as dim gray)."""
     if not S["scan_data"] or not vf: return "", S["_cursor_data"]
-    d = next((x for x in S["scan_data"] if x["vf"]==vf), None)
-    if not d: return "", S["_cursor_data"]
+    item = find_preview_entry(vf)
+    if not item: return "", S["_cursor_data"]
+    d = item["entry"]
 
     T=d["T"]; fps=d["fps"]; raw_labels=d["labels"]
     # Map raw labels to new indices; None → -1 (excluded)
@@ -1055,7 +1116,9 @@ def load_and_report_val(cur_status, sep_on, val_vdir, val_ldir, ldir):
     if not sep_on:
         S["_val_preview"] = None
         # recompute split so the list reverts to ratio-based train/val
-        return cur_status, build_video_list_html()
+        current = S.get("cur_vf")
+        return (cur_status, build_video_list_html(active_vf=current),
+                preview_dropdown_update(current), preview_nav_text(current))
     eff_val_ldir = val_ldir if val_ldir else ldir
     entries, msg = scan_val_folder(val_vdir, eff_val_ldir)
     S["_val_preview"] = entries
@@ -1064,7 +1127,9 @@ def load_and_report_val(cur_status, sep_on, val_vdir, val_ldir, ldir):
     base = cur_status or ""
     tag = (f" · Val: {len(entries)} matched" if entries
            else f" · Val: {msg}")
-    return base + tag, build_video_list_html()
+    current = S.get("cur_vf")
+    return (base + tag, build_video_list_html(active_vf=current),
+            preview_dropdown_update(current), preview_nav_text(current))
 
 
 def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
@@ -1159,6 +1224,7 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
         print(f"ℹ️ Realigned {n_misaligned}/{len(matched)} file(s) to global label order: {all_label_names}")
 
     reset_preview_reader()
+    S["_val_preview"] = None
     S["scan_data"]=matched; S["label_names"]=all_label_names
     compute_split(val_pct, val_seed)
     dist=build_label_dist_html()
@@ -1202,18 +1268,18 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
             dd_updates.append(gr.update(visible=False, choices=[], value=None))
 
     # Video dropdown
-    vnames=[d["vf"] for d in matched]
-    vid_dd_update=gr.update(choices=vnames,value=vnames[0])
+    preview_key="data:0"
+    vid_dd_update=preview_dropdown_update(preview_key)
 
     # Preview first video with initial mapping
     vf=matched[0]["vf"]
     dd_values = [u["value"] for u in dd_updates[:len(all_label_names)]]
     cache_mapping_values(head_mode, all_label_names, dd_values)
     new_names, label_map = compute_label_map_from_dropdowns(head_mode, dd_values, all_label_names, pretrained_names)
-    tl, cdata = build_mapped_timeline(vf, new_names, label_map)
+    tl, cdata = build_mapped_timeline(preview_key, new_names, label_map)
     summary = build_mapping_summary_html(head_mode, dd_values, all_label_names, pretrained_names)
 
-    img = _get_frame(vf, 0)
+    img = _get_frame(preview_key, 0)
     d0 = next(x for x in matched if x["vf"]==vf)
     T=d0["T"]; fps=d0["fps"]
     ml = label_map.get(d0["labels"][0], 0)
@@ -1221,8 +1287,8 @@ def do_scan_and_preview(vdir, ldir, val_pct, val_seed, head_mode, *dd_vals):
     _,bg = get_clr(ml if ml is not None else 0, nm0)
     info = f"<div style='display:flex;justify-content:space-between;align-items:center;'><span style='padding:3px 10px;border-radius:6px;background:{bg};color:white;font-size:12px;font-weight:500;'>{nm0}</span><span style='font-size:12px;color:var(--color-text-secondary);'>F: 0 / {T} | 0.00s / {T/fps:.2f}s</span></div>"
 
-    nav_t=f"**{vf}** — 1 / {len(matched)} videos"
-    vid_list=build_video_list_html(active_vf=vf)
+    nav_t=preview_nav_text(preview_key)
+    vid_list=build_video_list_html(active_vf=preview_key)
     status=f"✅ {len(matched)} matched (of {len(vfiles)} videos){fmt_str}"
 
     return (status, dist, nav_t, *dd_updates, vid_dd_update,
@@ -1740,8 +1806,9 @@ def _get_frame(vf, fi):
     # DataLoader is already reading them and a second decord reader here can
     # error out (that's the "Error" flashing on the timeline).
     if S.get("_training_active"): return None
-    d=next((x for x in S["scan_data"] if x["vf"]==vf),None)
-    if not d: return None
+    item=find_preview_entry(vf)
+    if not item: return None
+    d=item["entry"]
     with S["_preview_lock"]:
         try:
             if S["cur_vf"]!=vf or S["cur_vr"] is None:
@@ -1764,8 +1831,9 @@ def _get_frame(vf, fi):
 def _preview_video_mapped(vf, head_mode, dd_vals):
     """Preview video with current mapping applied."""
     if not S["scan_data"] or not vf: return None,"","",U,S["_cursor_data"]
-    d=next((x for x in S["scan_data"] if x["vf"]==vf),None)
-    if not d: return None,"","",U,S["_cursor_data"]
+    item=find_preview_entry(vf)
+    if not item: return None,"","",U,S["_cursor_data"]
+    d=item["entry"]
 
     data_labels=S["label_names"]; pretrained_names=S["cfg"]["class_names"] if S["cfg"] else []
     new_names, label_map = compute_label_map_from_dropdowns(head_mode, list(dd_vals[:len(data_labels)]), data_labels, pretrained_names)
@@ -1786,8 +1854,9 @@ def on_scrub(fi, head_mode, *dd_vals):
         return gr.update(), gr.update()
     vf=S["cur_vf"]
     if not vf or not S["scan_data"]: return None,"<p style='color:#aaa;'>No data</p>"
-    d=next((x for x in S["scan_data"] if x["vf"]==vf),None)
-    if not d: return None,""
+    item=find_preview_entry(vf)
+    if not item: return None,""
+    d=item["entry"]
 
     data_labels=S["label_names"]; pretrained_names=S["cfg"]["class_names"] if S["cfg"] else []
     new_names,label_map=compute_label_map_from_dropdowns(head_mode,list(dd_vals[:len(data_labels)]),data_labels,pretrained_names)
@@ -1800,30 +1869,29 @@ def on_scrub(fi, head_mode, *dd_vals):
     return _get_frame(vf,fi), info
 
 def do_nav(direction, head_mode, *dd_vals):
-    if not S["scan_data"]: return None,"","",U,S["_cursor_data"],"*No data*",""
-    vnames=[d["vf"] for d in S["scan_data"]]; cur=S["cur_vf"]
-    idx=vnames.index(cur) if cur in vnames else 0
+    if not S["scan_data"]: return None,"","",U,S["_cursor_data"],"*No data*","",gr.update()
+    items=get_preview_entries(); keys=[item["key"] for item in items]; cur=S["cur_vf"]
+    if not keys: return None,"","",U,S["_cursor_data"],"*No data*","",gr.update()
+    idx=keys.index(cur) if cur in keys else 0
     if direction=="prev": idx=max(0,idx-1)
-    else: idx=min(len(vnames)-1,idx+1)
-    vf=vnames[idx]
+    else: idx=min(len(keys)-1,idx+1)
+    vf=keys[idx]
     img,info,tl,scrub,cdata=_preview_video_mapped(vf,head_mode,dd_vals)
     vid_list=build_video_list_html(active_vf=vf)
-    return img,info,tl,scrub,cdata,f"**{vf}** — {idx+1} / {len(vnames)} videos",vid_list
+    return (img,info,tl,scrub,cdata,preview_nav_text(vf),vid_list,
+            preview_dropdown_update(vf))
 
 def on_vid_change(vf, head_mode, *dd_vals):
     img,info,tl,scrub,cdata=_preview_video_mapped(vf,head_mode,dd_vals)
     vid_list=build_video_list_html(active_vf=vf)
-    idx=0; total=0
-    if S["scan_data"]:
-        vnames=[d["vf"] for d in S["scan_data"]]
-        total=len(vnames)
-        if vf in vnames: idx=vnames.index(vf)
-    nav_txt=f"**{vf}** — {idx+1} / {total} videos" if total else "*Load data first*"
+    nav_txt=preview_nav_text(vf)
     return img,info,tl,scrub,cdata,vid_list,nav_txt
 
 def on_val_ratio_change(val_pct, val_seed):
     compute_split(val_pct, val_seed)
-    return build_video_list_html(active_vf=S["cur_vf"])
+    current=S.get("cur_vf")
+    return (build_video_list_html(active_vf=current),
+            preview_dropdown_update(current), preview_nav_text(current))
 
 # ====================== Progress + Validation HTML ======================
 
@@ -1902,9 +1970,22 @@ def scan_val_folder(val_vdir, val_ldir):
         try:
             vr = VideoReader(vp, ctx=cpu(0)); T = len(vr); fps = vr.get_avg_fps()
             del vr
-        except Exception:
+            boris = is_boris_csv(lp)
+            oh, col_names = load_label_data(lp, T, fps)
+            if not boris and T != len(oh):
+                print(f"⚠️ Length mismatch (val one-hot) {vf}: "
+                      f"video={T}, csv={len(oh)}")
+                continue
+            global_names = S.get("label_names") or list(col_names)
+            if list(col_names) != list(global_names):
+                oh = align_onehot_to_global(oh, col_names, global_names)
+            labels = np.argmax(oh, axis=1).tolist()
+        except Exception as e:
+            print(f"⚠️ Skipped validation preview {vf}: {e}")
             continue
-        entries.append({"vf": vf, "vp": vp, "lp": lp, "T": T, "fps": fps})
+        entries.append({"vf": vf, "vp": vp, "lp": lp, "T": T, "fps": fps,
+                        "labels": labels, "counts": Counter(labels),
+                        "is_boris": boris})
 
     if not entries:
         return [], "❌ No video/label pairs matched in val folder"
@@ -3219,7 +3300,7 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                  ).then(_seed_mapper, [head_mode_dd, *map_dds], lm_seed
                  ).then(load_and_report_val,
                         [scan_st, sep_val_cb, val_vdir_in, val_ldir_in, ldir_in],
-                        [scan_st, vid_list_html]) \
+                        [scan_st, vid_list_html, vid_dd, nav_md]) \
                  .then(build_aug_preview_html,
                        [head_mode_dd, aug_mult_in, aug_excluded_in, *map_dds],
                        aug_preview_html)
@@ -3250,8 +3331,10 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
     aug_excluded_in.input(build_aug_preview_html, _aug_prev_inputs, aug_preview_html)
 
     # Val ratio or val seed change → recompute split
-    vr_in.input(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
-    val_seed_in.input(on_val_ratio_change,[vr_in,val_seed_in],[vid_list_html])
+    vr_in.input(on_val_ratio_change,[vr_in,val_seed_in],
+                [vid_list_html,vid_dd,nav_md])
+    val_seed_in.input(on_val_ratio_change,[vr_in,val_seed_in],
+                      [vid_list_html,vid_dd,nav_md])
 
     # Video dropdown → preview with mapping
     vid_dd.input(on_vid_change,[vid_dd, head_mode_dd, *map_dds],
@@ -3263,9 +3346,9 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
 
     # Nav
     prev_btn.click(lambda hm,*dd: do_nav("prev",hm,*dd),[head_mode_dd,*map_dds],
-                   [frame_img,info_html,timeline_html,scrubber,cursor_state,nav_md,vid_list_html])
+                   [frame_img,info_html,timeline_html,scrubber,cursor_state,nav_md,vid_list_html,vid_dd])
     next_btn.click(lambda hm,*dd: do_nav("next",hm,*dd),[head_mode_dd,*map_dds],
-                   [frame_img,info_html,timeline_html,scrubber,cursor_state,nav_md,vid_list_html])
+                   [frame_img,info_html,timeline_html,scrubber,cursor_state,nav_md,vid_list_html,vid_dd])
 
     # reveal the inputs when "separate validation folder" is ticked
     def _on_sep_toggle(on):
