@@ -3341,8 +3341,12 @@ with gr.Blocks(title="Training", theme=YELLOW_THEME, css=CUSTOM_CSS) as demo:
                  [frame_img,info_html,timeline_html,scrubber,cursor_state,vid_list_html,nav_md])
 
     # Scrubber
+    # Move the lightweight timeline cursor continuously in the browser, but
+    # decode/send a full-resolution video frame only after the user releases
+    # the slider.  Running on_scrub on every input event can queue hundreds of
+    # Decord + NumPy + Gradio image jobs and exhaust system RAM.
     scrubber.input(fn=None,inputs=[scrubber,cursor_state],outputs=[scrubber],js=CURSOR_JS)
-    scrubber.input(on_scrub,[scrubber, head_mode_dd, *map_dds],[frame_img,info_html])
+    scrubber.release(on_scrub,[scrubber, head_mode_dd, *map_dds],[frame_img,info_html])
 
     # Nav
     prev_btn.click(lambda hm,*dd: do_nav("prev",hm,*dd),[head_mode_dd,*map_dds],
