@@ -1,9 +1,30 @@
+# PyTorch is intentionally not listed here. Install torch and torchvision
+# separately so the build matches the available CUDA version. On Google Colab,
+# use the notebook's first setup cell (Colab already provides a CUDA build).
+# On a local machine, use the command generated at https://pytorch.org/get-started/locally/.
+
+# Pretrained video models
 transformers>=4.30
-decord
-Pillow
-numpy
-pandas
-gradio
-huggingface_hub
-ultralytics
-opencv-python
+
+# Video and image processing
+decord>=0.6.0
+Pillow>=9.0
+opencv-python>=4.7
+imageio>=2.31
+imageio-ffmpeg>=0.4.8
+ultralytics>=8.0
+
+# Data processing and evaluation
+numpy>=1.23
+pandas>=1.5
+scikit-learn>=1.2
+
+# User interface and model downloads
+gradio>=4.0
+huggingface-hub>=0.16
+
+# Plotting and experiment utilities
+matplotlib>=3.7
+seaborn>=0.12
+tqdm>=4.65
+psutil>=5.9
