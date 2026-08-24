@@ -1,158 +1,151 @@
-# Cross-Domain Swin3D — Zero-Shot & Fine-tuning
+# Figure 6 — Cross-Domain Swin3D
 
-Evaluate or fine-tune a Video Swin-T model on a new dataset with different behavior classes.
-Supports zero-shot evaluation, Kinetics-400 fine-tuning, and custom pretrained fine-tuning with data efficiency experiments.
+This experiment evaluates a Video Swin-T checkpoint on a different mouse dataset and compares zero-shot transfer with Kinetics-400 or custom-checkpoint fine-tuning.
 
 ## Requirements
 
+Run this cell once in Colab:
+
 ```bash
-pip install torch torchvision decord numpy pandas scikit-learn matplotlib seaborn tqdm
+!pip install torch torchvision transformers decord numpy pandas scikit-learn matplotlib seaborn tqdm
 ```
 
-## Scripts
+## Evaluation Code
 
-| Script | Description |
-|---|---|
-| `zeroshot_eval.py` | Load a pretrained model → evaluate directly on test set (no training) |
-| `crossdomain_train.py` | Fine-tune on a new dataset (K400 or custom pretrained init) → auto-evaluate best epoch on test set |
-| `crossdomain_eval.py` | Evaluate a trained checkpoint on a test set (standalone, no training) |
-
-## Arguments
-
-### zeroshot_eval.py
-
-| Argument | Default | Description |
-|---|---|---|
-| `--model_path` | *(required)* | Path to pretrained `.pth` checkpoint |
-| `--test_video_dir` | *(required)* | Test video directory |
-| `--test_label_dir` | *(required)* | Test label directory |
-| `--output_dir` | `results/zeroshot` | Output directory for results |
-| `--smooth_window_size` | `1` | Temporal smoothing window |
-| `--save_cm` | off | Save confusion matrix images |
-
-### crossdomain_train.py
-
-| Argument | Default | Description |
-|---|---|---|
-| `--pretrained_model_path` | *(none)* | Path to custom pretrained `.pth`. If omitted, uses **Kinetics-400** weights. |
-| `--seed` | `2025` | General seed (model init, augmentation, shuffle) |
-| `--val_split_seed` | `1337` | Val split seed (**FIXED** across experiments) |
-| `--video_split_seed` | `42` | Seed for subsampling training videos |
-| `--train_video_dir` | *(required)* | Training video directory |
-| `--train_label_dir` | *(required)* | Training label directory |
-| `--model_save_dir` | `checkpoints/crossdomain` | Checkpoint directory |
-| `--train_data_ratio` | `1.0` | Fraction of training videos to use (1.0=all, 0.5=50%) |
-| `--validation_ratio` | `0.2` | Fraction for validation |
-| `--batch_size` | `8` | Batch size |
-| `--accumulation_steps` | `2` | Gradient accumulation steps |
-| `--num_epochs` | `5` | Number of epochs |
-| `--base_lr` | `3.8e-5` | Learning rate (use `~1e-5` for custom pretrained, `~3.8e-5` for K400) |
-| `--use_class_weights` | off | Enable inverse-frequency class weights |
-
-### crossdomain_eval.py
-
-| Argument | Default | Description |
-|---|---|---|
-| `--model_path` | *(required)* | Path to `.pth` checkpoint |
-| `--test_video_dir` | *(required)* | Test video directory |
-| `--test_label_dir` | *(required)* | Test label directory |
-| `--output_dir` | *(model dir)* | Output directory |
-| `--smooth_window_size` | `1` | Temporal smoothing window |
-| `--save_cm` | off | Save confusion matrix images |
-| `--save_results` | *(none)* | Path to save JSON results |
-
-## Seed Design
-
-- **`--seed`** (general): controls model init, augmentation, shuffle. **Change** across runs.
-- **`--val_split_seed`** (val split): controls train/val assignment. **Keep FIXED** (default 1337).
-- **`--video_split_seed`** (data subsampling): controls which videos are selected when `--train_data_ratio < 1.0`.
-
-## Usage
-
-### Zero-Shot Evaluation (no training)
+### Evaluate the provided Figure 6 checkpoint
 
 ```bash
-python zeroshot_eval.py \
-    --model_path checkpoints/fulltrain_all3folds_ep5.pth \
-    --test_video_dir data/new/videos/test \
-    --test_label_dir data/new/labels/test \
+%cd /content/drive/MyDrive/reproduce/figure6
+
+!python crossdomain_eval.py \
+    --model_path /content/drive/MyDrive/reproduce/figure6/kinetics400_ratio0.5_42.pth \
+    --test_video_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/video/test/" \
+    --test_label_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/onehot/" \
+    --output_dir /content/drive/MyDrive/reproduce/figure6/results/crossdomain \
+    --save_cm \
+    --save_results /content/drive/MyDrive/reproduce/figure6/results/crossdomain/results.json
+```
+
+### Zero-shot evaluation without additional training
+
+Replace `mouse_source_pretrained.pth` with the source-domain checkpoint you want to transfer.
+
+```bash
+%cd /content/drive/MyDrive/reproduce/figure6
+
+!python zeroshot_eval.py \
+    --model_path /content/drive/MyDrive/reproduce/figure6/mouse_source_pretrained.pth \
+    --test_video_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/video/test/" \
+    --test_label_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/onehot/" \
+    --output_dir /content/drive/MyDrive/reproduce/figure6/results/zeroshot \
+    --seed 2025 \
     --save_cm
 ```
 
-### Fine-tune from Kinetics-400 (no custom model)
+## Training Code
+
+The training examples assume the new-domain training videos are in the corresponding `video/train/` folder and that `onehot/` contains their label CSV files.
+
+### Fine-tune from Kinetics-400 using 50% of the videos
+
+Omitting `--pretrained_model_path` makes the script initialize from torchvision Kinetics-400 weights.
 
 ```bash
-# Full data
-python crossdomain_train.py --seed 123 \
-    --train_video_dir data/new/videos/train \
-    --train_label_dir data/new/labels/train \
-    --base_lr 3.8e-5
+%cd /content/drive/MyDrive/reproduce/figure6
 
-# 50% data
-python crossdomain_train.py --seed 123 \
-    --train_data_ratio 0.5 --video_split_seed 42 \
-    --train_video_dir data/new/videos/train \
-    --train_label_dir data/new/labels/train \
-    --base_lr 3.8e-5
+!python crossdomain_train.py \
+    --train_video_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/video/train/" \
+    --train_label_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/onehot/" \
+    --train_data_ratio 0.5 \
+    --video_split_seed 42 \
+    --seed 2025 \
+    --val_split_seed 1337 \
+    --base_lr 3.8e-5 \
+    --model_save_dir /content/drive/MyDrive/reproduce/figure6/checkpoints/kinetics400_ratio05
 ```
 
-### Fine-tune from Custom Pretrained
+### Fine-tune from a custom source-domain checkpoint
 
 ```bash
-# Full data
-python crossdomain_train.py --seed 123 \
-    --pretrained_model_path checkpoints/fulltrain_all3folds_ep5.pth \
-    --train_video_dir data/new/videos/train \
-    --train_label_dir data/new/labels/train \
-    --base_lr 1e-5
+%cd /content/drive/MyDrive/reproduce/figure6
 
-# 50% data
-python crossdomain_train.py --seed 123 \
-    --pretrained_model_path checkpoints/fulltrain_all3folds_ep5.pth \
-    --train_data_ratio 0.5 --video_split_seed 42 \
-    --train_video_dir data/new/videos/train \
-    --train_label_dir data/new/labels/train \
-    --base_lr 1e-5
+!python crossdomain_train.py \
+    --pretrained_model_path /content/drive/MyDrive/reproduce/figure6/mouse_source_pretrained.pth \
+    --train_video_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/video/train/" \
+    --train_label_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/onehot/" \
+    --train_data_ratio 0.5 \
+    --video_split_seed 42 \
+    --seed 2025 \
+    --val_split_seed 1337 \
+    --base_lr 1e-5 \
+    --model_save_dir /content/drive/MyDrive/reproduce/figure6/checkpoints/custom_ratio05
 ```
 
-### Evaluation
+## Seed Design
 
-```bash
-python crossdomain_eval.py \
-    --model_path checkpoints/crossdomain/crossdomain_ratio100_seed123_ep3_f1_0.75_map_0.80.pth \
-    --test_video_dir data/new/videos/test \
-    --test_label_dir data/new/labels/test \
-    --save_cm --save_results results.json
-```
+- `--seed` controls model initialization, augmentation and shuffle. Change it for repeated training runs.
+- `--val_split_seed` controls train/validation assignment. Keep it fixed at `1337` for fair comparison.
+- `--video_split_seed` controls which videos are retained when `--train_data_ratio < 1.0`; use the same value when comparing initialization methods.
+- `zeroshot_eval.py` also accepts `--seed`, but performs no training.
+
+## Arguments
+
+### `crossdomain_train.py`
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--pretrained_model_path` | none | Custom `.pth`; omit for Kinetics-400 initialization |
+| `--train_video_dir` | required | New-domain training videos |
+| `--train_label_dir` | required | New-domain label CSVs |
+| `--train_data_ratio` | `1.0` | Fraction of training videos retained |
+| `--video_split_seed` | `42` | Video-subsampling seed |
+| `--seed` | `2025` | General random seed |
+| `--val_split_seed` | `1337` | Fixed validation-split seed |
+| `--validation_ratio` | `0.2` | Validation fraction |
+| `--batch_size` | `8` | Batch size |
+| `--accumulation_steps` | `2` | Gradient accumulation |
+| `--num_epochs` | `5` | Training epochs |
+| `--base_lr` | `3.8e-5` | Learning rate; typically lower for a custom checkpoint |
+| `--model_save_dir` | `checkpoints/crossdomain` | Checkpoint/log directory |
+
+### Evaluation scripts
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--model_path` | required | `.pth` checkpoint |
+| `--test_video_dir` | required | Test-video directory |
+| `--test_label_dir` | required | Test-label directory |
+| `--output_dir` | zero-shot: `results/zeroshot`; cross-domain: model folder | Output directory |
+| `--batch_size` | `8` | Evaluation batch size |
+| `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
+| `--smooth_window_size` | `1` | Temporal smoothing window |
+| `--save_cm` | off | Save confusion-matrix images |
+| `--save_results` | none | JSON path; `crossdomain_eval.py` only |
+
+## Scripts
+
+| Script | Purpose |
+|---|---|
+| `zeroshot_eval.py` | Evaluate a source checkpoint directly, with no training |
+| `crossdomain_train.py` | Fine-tune from Kinetics-400 or a custom checkpoint |
+| `crossdomain_eval.py` | Evaluate a trained cross-domain checkpoint |
 
 ## Output Naming Convention
 
-```
+```text
 {mode}_{ratio}{vseed}_seed{seed}_ep{N}_f1_{val}_map_{val}.pth
 ```
 
-Examples:
-- `kinetics400_ratio100_seed123_ep3_f1_0.7500_map_0.8000.pth` — K400 init, 100% data
-- `crossdomain_ratio50_vseed42_seed123_ep5_f1_0.6800_map_0.7200.pth` — Custom pretrained, 50% data
+Examples: `kinetics400_ratio100_seed123_ep3_f1_0.7500_map_0.8000.pth` and `crossdomain_ratio50_vseed42_seed123_ep5_f1_0.6800_map_0.7200.pth`.
 
 ## Behavior Classes
 
-5 classes selected from 7 in the label CSVs:
+Five of the seven CSV columns are used: `Aggression` (0), `Investigation` (1), `Allo-groom` (2), `Standing` (4) and `Other` (6). Frames labeled `Self-groom` (3) or `Chasing` (5) are skipped.
 
-| Selected | Original Column | Notes |
-|---|---|---|
-| `Aggression` | 0 | Rare behavior |
-| `Investigation` | 1 | |
-| `Allo-groom` | 2 | Rare behavior |
-| `Standing` | 4 | |
-| `Other` | 6 | |
+## Model Initialization Comparison
 
-Excluded: `Self-groom` (col 3), `Chasing` (col 5) — frames with these labels are skipped.
-
-## Model Init Comparison
-
-| Mode | `--pretrained_model_path` | Backbone init | MLP head | Typical LR |
-|---|---|---|---|---|
-| K400 | *(omitted)* | Kinetics-400 (torchvision) | Random | `3.8e-5` |
-| Custom | checkpoint path | Custom pretrained weights | From checkpoint | `1e-5` |
-| Zero-shot | checkpoint path | From checkpoint | From checkpoint | N/A |
+| Mode | `--pretrained_model_path` | Backbone/head source | Typical LR |
+|---|---|---|---:|
+| K400 fine-tune | omitted | Kinetics-400 backbone, random MLP head | `3.8e-5` |
+| Custom fine-tune | checkpoint path | Backbone and head from checkpoint | about `1e-5` |
+| Zero-shot | checkpoint path | Backbone and head from checkpoint; no updates | N/A |

@@ -1,84 +1,133 @@
-# Fly Copulation — Stratified Val Split (No Data Efficiency Ratio)
+# Table 3 — Fly Copulation Classification
 
-Video Swin-T / TimeSformer (K400 pretrained) + MLP Head + CE Loss.
-Stratified video-level split by rare behavior (copulation).
+This experiment compares Kinetics-400-pretrained Video Swin-T and TimeSformer models on four fly-copulation behavior classes using a stratified video-level validation split.
 
 ## Requirements
 
+Run this cell once in Colab:
+
 ```bash
-pip install torch torchvision transformers decord numpy pandas scikit-learn matplotlib seaborn tqdm
+!pip install torch torchvision transformers decord numpy pandas scikit-learn matplotlib seaborn tqdm
 ```
 
-## Behavior Remapping
+## Evaluation Code
 
-Original 5 classes → Selected 4 classes:
+Put the Table 3 checkpoints in `/content/drive/MyDrive/reproduce/table3/` and rename them as shown, or replace only `--model_path` with the real checkpoint filename.
 
-| Original | → Selected |
-|---|---|
-| wing_extension | wing_extension |
-| circle | circle |
-| copul_attempt | **others** (merged) |
-| copulation | copulation |
-| others | others |
+### TimeSformer
+
+```bash
+%cd /content/drive/MyDrive/reproduce/table3
+
+!python eval_fly_timesformer.py \
+    --model_path /content/drive/MyDrive/reproduce/table3/table3_timesformer.pth \
+    --test_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/test/" \
+    --test_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/test/" \
+    --save_cm /content/drive/MyDrive/reproduce/table3/timesformer_cm.png \
+    --save_results /content/drive/MyDrive/reproduce/table3/timesformer_results.json
+```
+
+### Video Swin-T
+
+```bash
+%cd /content/drive/MyDrive/reproduce/table3
+
+!python eval_fly_swin3d.py \
+    --model_path /content/drive/MyDrive/reproduce/table3/table3_swin3d.pth \
+    --test_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/test/" \
+    --test_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/test/" \
+    --save_cm /content/drive/MyDrive/reproduce/table3/swin3d_cm.png \
+    --save_results /content/drive/MyDrive/reproduce/table3/swin3d_results.json
+```
+
+## Training Code
+
+### TimeSformer
+
+```bash
+%cd /content/drive/MyDrive/reproduce/table3
+
+!python train_fly_timesformer.py \
+    --train_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/train/" \
+    --train_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/train/" \
+    --seed 1337 \
+    --val_split_seed 123 \
+    --model_save_dir /content/drive/MyDrive/reproduce/table3/checkpoints/fly_timesformer
+```
+
+### Video Swin-T
+
+```bash
+%cd /content/drive/MyDrive/reproduce/table3
+
+!python train_fly_swin3d.py \
+    --train_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/train/" \
+    --train_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/train/" \
+    --seed 123 \
+    --val_split_seed 123 \
+    --model_save_dir /content/drive/MyDrive/reproduce/table3/checkpoints/fly_swin3d
+```
 
 ## Seed Design
 
-Two separate seeds for different purposes:
-
 | Seed | Default | Purpose |
 |---|---|---|
-| `--seed` | Swin3D: `123`, TimeSformer: `1337` | Model init, augmentation, shuffle |
-| `--val_split_seed` | `123` (FIXED) | Validation split — **never change** |
+| `--seed` | Swin-T: `123`; TimeSformer: `1337` | Model initialization, augmentation and shuffle |
+| `--val_split_seed` | `123` | Validation split; keep fixed across comparisons |
 
-Change `--seed` for multiple runs; keep `--val_split_seed` fixed for fair comparison.
+Change `--seed` for repeated runs, but keep `--val_split_seed 123` so every run sees the same train/validation videos.
 
-## Training
+## Arguments
 
-```bash
-# Swin3D
-python train_fly_swin3d.py \
-  --train_video_dir /path/to/videos/train \
-  --train_label_dir /path/to/labels/train \
-  --seed 123
+### Training
 
-# TimeSformer
-python train_fly_timesformer.py \
-  --train_video_dir /path/to/videos/train \
-  --train_label_dir /path/to/labels/train \
-  --seed 1337
-```
+| Argument | Swin-T default | TimeSformer default | Description |
+|---|---:|---:|---|
+| `--train_video_dir` | `data/fly/videos/train` | same | Training-video directory |
+| `--train_label_dir` | `data/fly/labels/train` | same | Training-label directory |
+| `--seed` | `123` | `1337` | General random seed |
+| `--val_split_seed` | `123` | `123` | Fixed validation-split seed |
+| `--validation_ratio` | `0.15` | `0.15` | Validation fraction |
+| `--batch_size` | `8` | `8` | Batch size |
+| `--accumulation_steps` | `2` | `2` | Gradient accumulation |
+| `--num_epochs` | `5` | `5` | Training epochs |
+| `--base_lr` | `3.8e-5` | `3e-5` | Learning rate |
+| `--window_size` / `--stride` | `16` / `4` | `16` / `4` | Temporal window and stride |
+| `--model_save_dir` | `checkpoints/fly_swin3d` | `checkpoints/fly_timesformer` | Output directory |
+| `--use_class_weights` | off | off | Enable inverse-frequency weights |
+| `--hf_model` | — | `facebook/timesformer-base-finetuned-k400` | Hugging Face backbone |
 
-## Evaluation
+### Evaluation
 
-```bash
-# Swin3D
-python eval_fly_swin3d.py \
-  --model_path checkpoints/fly_swin3d/model.pth \
-  --test_video_dir /path/to/videos/test \
-  --test_label_dir /path/to/labels/test
+| Argument | Default | Description |
+|---|---:|---|
+| `--model_path` | required | `.pth` checkpoint |
+| `--test_video_dir` | `data/fly/videos/test` | Test-video directory |
+| `--test_label_dir` | `data/fly/labels/test` | Test-label directory |
+| `--batch_size` | `8` | Evaluation batch size |
+| `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
+| `--smooth_window_size` | `1` | Temporal smoothing window |
+| `--save_cm` | none | Confusion-matrix PNG path |
+| `--save_results` | none | Metrics JSON path |
 
-# TimeSformer
-python eval_fly_timesformer.py \
-  --model_path checkpoints/fly_timesformer/model.pth \
-  --test_video_dir /path/to/videos/test \
-  --test_label_dir /path/to/labels/test
-```
+## Behavior Remapping
+
+| Original class | Selected class |
+|---|---|
+| `wing_extension` | `wing_extension` |
+| `circle` | `circle` |
+| `copul_attempt` | `others` |
+| `copulation` | `copulation` |
+| `others` | `others` |
 
 ## Output Naming Convention
 
-```
+```text
 fly_{model}_seed{X}_vsplit{Y}_ep{N}_f1_{val}_map_{val}.pth
 ```
 
-Examples:
-- `fly_swin3d_seed123_vsplit123_ep3_f1_0.7234_map_0.8123.pth`
-- `fly_timesformer_seed1337_vsplit123_ep5_f1_0.6987_map_0.7890.pth`
+Examples: `fly_swin3d_seed123_vsplit123_ep3_f1_0.7234_map_0.8123.pth` and `fly_timesformer_seed1337_vsplit123_ep5_f1_0.6987_map_0.7890.pth`.
 
-## Differences from Ratio Scripts
+## Difference from Figure 5 Ratio Scripts
 
-| | This version | Ratio version |
-|---|---|---|
-| `--train_data_ratio` | ❌ | ✅ |
-| `--video_split_seed` | ❌ | ✅ |
-| Best model selection | val F1-macro (all) | val F1-macro (no others) |
-| Purpose | Standard training | Data efficiency analysis |
+Table 3 always trains on all selected training videos and chooses the best checkpoint by validation macro F1 over all classes. Figure 5 adds `--train_data_ratio` and `--video_split_seed`, and selects by macro F1 excluding `others`.
