@@ -12,32 +12,32 @@ Run this cell once in Colab:
 
 ## Evaluation Code
 
-Put the Figure 5 checkpoints in `/content/drive/MyDrive/reproduce/figure5/` and rename them as shown, or change only the checkpoint filename.
+The paths below are Google Drive examples. Replace `xxx` with the folder structure you created in your own Drive.
 
 ### TimeSformer — 75% data, video seed 42
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure5
+%cd /content/drive/MyDrive/xxx/reproduce/figure5
 
 !python eval_fly_timesformer_ratio.py \
-    --model_path /content/drive/MyDrive/reproduce/figure5/figure5_timesformer_ratio0.75_42.pth \
-    --test_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/test/" \
-    --test_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/test/" \
-    --save_cm /content/drive/MyDrive/reproduce/figure5/timesformer_ratio075_cm.png \
-    --save_results /content/drive/MyDrive/reproduce/figure5/timesformer_ratio075_results.json
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure5_timesformer_ratio0.75_42.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/fly/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/fly/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/timesformer_ratio075_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/timesformer_ratio075_results.json
 ```
 
 ### Video Swin-T — 75% data, video seed 42
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure5
+%cd /content/drive/MyDrive/xxx/reproduce/figure5
 
 !python eval_fly_swin3d_ratio.py \
-    --model_path /content/drive/MyDrive/reproduce/figure5/figure5_swin3d_ratio0.75_42.pth \
-    --test_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/test/" \
-    --test_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/test/" \
-    --save_cm /content/drive/MyDrive/reproduce/figure5/swin3d_ratio075_cm.png \
-    --save_results /content/drive/MyDrive/reproduce/figure5/swin3d_ratio075_results.json
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure5_swin3d_ratio0.75_42.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/fly/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/fly/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/swin3d_ratio075_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/swin3d_ratio075_results.json
 ```
 
 Evaluation does not accept a ratio argument; the loaded checkpoint determines which training ratio is being evaluated.
@@ -47,31 +47,31 @@ Evaluation does not accept a ratio argument; the loaded checkpoint determines wh
 ### TimeSformer — 75% data, video seed 42
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure5
+%cd /content/drive/MyDrive/xxx/reproduce/figure5
 
 !python train_fly_timesformer_ratio.py \
-    --train_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/train/" \
-    --train_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/train/" \
+    --train_video_dir /content/drive/MyDrive/xxx/fly/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/fly/labels/train/ \
     --train_data_ratio 0.75 \
     --video_split_seed 42 \
     --seed 2025 \
     --val_split_seed 123 \
-    --model_save_dir /content/drive/MyDrive/reproduce/figure5/checkpoints/fly_timesformer_ratio
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure5/fly_timesformer_ratio
 ```
 
 ### Video Swin-T — 75% data, video seed 42
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure5
+%cd /content/drive/MyDrive/xxx/reproduce/figure5
 
 !python train_fly_swin3d_ratio.py \
-    --train_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/train/" \
-    --train_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/train/" \
+    --train_video_dir /content/drive/MyDrive/xxx/fly/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/fly/labels/train/ \
     --train_data_ratio 0.75 \
     --video_split_seed 42 \
     --seed 2025 \
     --val_split_seed 123 \
-    --model_save_dir /content/drive/MyDrive/reproduce/figure5/checkpoints/fly_swin3d_ratio
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure5/fly_swin3d_ratio
 ```
 
 Change `--train_data_ratio` and `--video_split_seed` together for the other Figure 5 conditions. The best checkpoint is selected by validation macro F1 excluding `others`.
@@ -88,8 +88,8 @@ Change `--train_data_ratio` and `--video_split_seed` together for the other Figu
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--train_video_dir` | `data/fly/videos/train` | Training-video directory |
-| `--train_label_dir` | `data/fly/labels/train` | Training-label directory |
+| `--train_video_dir` | `data/fly/videos/train` | Google Drive folder containing training videos |
+| `--train_label_dir` | `data/fly/labels/train` | Google Drive folder containing training-label CSV files |
 | `--train_data_ratio` | `1.0` | Fraction of training videos retained |
 | `--video_split_seed` | `42` | Video-subsampling seed |
 | `--seed` | `2025` | General random seed |
@@ -100,21 +100,32 @@ Change `--train_data_ratio` and `--video_split_seed` together for the other Figu
 | `--num_epochs` | `5` | Training epochs |
 | `--base_lr` | `3.8e-5` | Learning rate |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
-| `--model_save_dir` | model-specific | Checkpoint/log directory |
+| `--model_save_dir` | model-specific | Google Drive folder used to save checkpoints and logs |
 | `--use_class_weights` | off | Enable inverse-frequency weights |
 
 ### Evaluation
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--model_path` | required | Ratio-specific `.pth` checkpoint |
-| `--test_video_dir` | `data/fly/videos/test` | Test-video directory |
-| `--test_label_dir` | `data/fly/labels/test` | Test-label directory |
+| `--model_path` | required | Location of the ratio-specific `.pth` checkpoint on Google Drive |
+| `--test_video_dir` | `data/fly/videos/test` | Google Drive folder containing test videos |
+| `--test_label_dir` | `data/fly/labels/test` | Google Drive folder containing test-label CSV files |
 | `--batch_size` | `8` | Evaluation batch size |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
 | `--smooth_window_size` | `1` | Temporal smoothing window |
-| `--save_cm` | none | Confusion-matrix PNG path |
-| `--save_results` | none | Metrics JSON path |
+| `--save_cm` | none | Google Drive path where the confusion-matrix PNG is saved |
+| `--save_results` | none | Google Drive path where the metrics JSON is saved |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--train_video_dir /content/drive/MyDrive/xxx/fly/videos/train
+--train_label_dir /content/drive/MyDrive/xxx/fly/labels/train
+--test_video_dir /content/drive/MyDrive/xxx/fly/videos/test
+--test_label_dir /content/drive/MyDrive/xxx/fly/labels/test
+--model_save_dir /content/drive/MyDrive/xxx/outputs
+```
 
 ## Behavior Remapping
 

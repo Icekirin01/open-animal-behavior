@@ -15,29 +15,29 @@ Run this cell once in Colab:
 ### CalMS21
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table2
+%cd /content/drive/MyDrive/xxx/reproduce/table2
 
 !python eval_calms21.py \
-    --model_path /content/drive/MyDrive/reproduce/table2/CalMS21_123.pth \
-    --test_video_dir /content/drive/MyDrive/traindata/video_dataset/test/resized/ \
-    --test_label_dir /content/drive/MyDrive/traindata/label_dataset/test/ \
-    --save_cm /content/drive/MyDrive/reproduce/table2/calms21_cm.png \
-    --save_results /content/drive/MyDrive/reproduce/table2/calms21_results.json
+    --model_path /content/drive/MyDrive/xxx/checkpoints/CalMS21_123.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/calms21/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/calms21/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/calms21_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/calms21_results.json
 ```
 
 ### CRIM13
 
-The command assumes CRIM13 is under `/content/drive/MyDrive/traindata/crim13/`. Change the three CRIM13 paths if your Drive layout differs.
+The paths are examples only. Replace `xxx` and the following folder names with the locations you created in Google Drive.
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table2
+%cd /content/drive/MyDrive/xxx/reproduce/table2
 
 !python eval_crim13.py \
-    --model_path /content/drive/MyDrive/reproduce/table2/CRIM13_123.pth \
-    --test_video_dir /content/drive/MyDrive/traindata/crim13/video_dataset/test/ \
-    --test_label_dir /content/drive/MyDrive/traindata/crim13/label_dataset/ \
-    --save_cm /content/drive/MyDrive/reproduce/table2/crim13_cm.png \
-    --save_results /content/drive/MyDrive/reproduce/table2/crim13_results.json
+    --model_path /content/drive/MyDrive/xxx/checkpoints/CRIM13_123.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/crim13/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/crim13/labels/ \
+    --save_cm /content/drive/MyDrive/xxx/results/crim13_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/crim13_results.json
 ```
 
 ## Training Code
@@ -45,27 +45,27 @@ The command assumes CRIM13 is under `/content/drive/MyDrive/traindata/crim13/`. 
 ### CalMS21
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table2
+%cd /content/drive/MyDrive/xxx/reproduce/table2
 
 !python train_calms21.py \
-    --train_video_dir /content/drive/MyDrive/traindata/video_dataset/train/resized/ \
-    --train_label_dir /content/drive/MyDrive/traindata/label_dataset/train/ \
+    --train_video_dir /content/drive/MyDrive/xxx/calms21/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/calms21/labels/train/ \
     --seed 123 \
     --val_split_seed 1337 \
-    --model_save_dir /content/drive/MyDrive/reproduce/table2/checkpoints/calms21
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/table2/calms21
 ```
 
 ### CRIM13
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table2
+%cd /content/drive/MyDrive/xxx/reproduce/table2
 
 !python train_crim13.py \
-    --train_video_dir /content/drive/MyDrive/traindata/crim13/video_dataset/train/ \
-    --train_label_dir /content/drive/MyDrive/traindata/crim13/label_dataset/ \
+    --train_video_dir /content/drive/MyDrive/xxx/crim13/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/crim13/labels/ \
     --seed 123 \
     --val_split_seed 1337 \
-    --model_save_dir /content/drive/MyDrive/reproduce/table2/checkpoints/crim13
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/table2/crim13
 ```
 
 To repeat the experiment, rerun each training command with `--seed 1337` and `--seed 2025`; do not change `--val_split_seed`.
@@ -81,8 +81,8 @@ To repeat the experiment, rerun each training command with `--seed 1337` and `--
 
 | Argument | CalMS21 default | CRIM13 default | Description |
 |---|---:|---:|---|
-| `--train_video_dir` | `data/calms21/videos/train` | `data/crim13/videos/train` | Training-video directory |
-| `--train_label_dir` | `data/calms21/labels/train` | `data/crim13/labels` | Training-label directory |
+| `--train_video_dir` | `data/calms21/videos/train` | `data/crim13/videos/train` | Google Drive folder containing training videos |
+| `--train_label_dir` | `data/calms21/labels/train` | `data/crim13/labels` | Google Drive folder containing training-label CSV files |
 | `--seed` | `123` | `123` | General random seed |
 | `--val_split_seed` | `1337` | `1337` | Fixed validation-split seed |
 | `--validation_ratio` | `0.15` | `0.15` | Fraction of videos used for validation |
@@ -92,20 +92,31 @@ To repeat the experiment, rerun each training command with `--seed 1337` and `--
 | `--base_lr` | `3.8e-5` | `2e-5` | Learning rate |
 | `--window_size` / `--stride` | `16` / `4` | `16` / `4` | Temporal window and stride |
 | `--use_class_weights` | off | off | Enable inverse-frequency weights |
-| `--model_save_dir` | `checkpoints/calms21` | `checkpoints/crim13` | Checkpoint/log directory |
+| `--model_save_dir` | `checkpoints/calms21` | `checkpoints/crim13` | Google Drive folder used to save checkpoints and logs |
 
 ### Evaluation
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--model_path` | required | `.pth` checkpoint |
-| `--test_video_dir` | dataset-specific | Test-video directory |
-| `--test_label_dir` | dataset-specific | Test-label directory |
+| `--model_path` | required | Location of the `.pth` checkpoint on Google Drive |
+| `--test_video_dir` | dataset-specific | Google Drive folder containing test videos |
+| `--test_label_dir` | dataset-specific | Google Drive folder containing test-label CSV files |
 | `--batch_size` | `1` | Evaluation batch size |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
 | `--smooth_window_size` | `1` | Temporal smoothing window |
-| `--save_cm` | none | Confusion-matrix PNG path |
-| `--save_results` | none | Metrics JSON path |
+| `--save_cm` | none | Google Drive path where the confusion-matrix PNG is saved |
+| `--save_results` | none | Google Drive path where the metrics JSON is saved |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--train_video_dir /content/drive/MyDrive/xxx/videos/train
+--train_label_dir /content/drive/MyDrive/xxx/labels/train
+--test_video_dir /content/drive/MyDrive/xxx/videos/test
+--test_label_dir /content/drive/MyDrive/xxx/labels/test
+--model_save_dir /content/drive/MyDrive/xxx/outputs
+```
 
 ## Output Naming Convention
 

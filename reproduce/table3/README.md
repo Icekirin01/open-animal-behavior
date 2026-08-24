@@ -12,32 +12,32 @@ Run this cell once in Colab:
 
 ## Evaluation Code
 
-Put the Table 3 checkpoints in `/content/drive/MyDrive/reproduce/table3/` and rename them as shown, or replace only `--model_path` with the real checkpoint filename.
+The paths below are Google Drive examples. Replace `xxx` with the folder structure you created in your own Drive.
 
 ### TimeSformer
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table3
+%cd /content/drive/MyDrive/xxx/reproduce/table3
 
 !python eval_fly_timesformer.py \
-    --model_path /content/drive/MyDrive/reproduce/table3/table3_timesformer.pth \
-    --test_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/test/" \
-    --test_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/test/" \
-    --save_cm /content/drive/MyDrive/reproduce/table3/timesformer_cm.png \
-    --save_results /content/drive/MyDrive/reproduce/table3/timesformer_results.json
+    --model_path /content/drive/MyDrive/xxx/checkpoints/table3_timesformer.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/fly/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/fly/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/timesformer_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/timesformer_results.json
 ```
 
 ### Video Swin-T
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table3
+%cd /content/drive/MyDrive/xxx/reproduce/table3
 
 !python eval_fly_swin3d.py \
-    --model_path /content/drive/MyDrive/reproduce/table3/table3_swin3d.pth \
-    --test_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/test/" \
-    --test_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/test/" \
-    --save_cm /content/drive/MyDrive/reproduce/table3/swin3d_cm.png \
-    --save_results /content/drive/MyDrive/reproduce/table3/swin3d_results.json
+    --model_path /content/drive/MyDrive/xxx/checkpoints/table3_swin3d.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/fly/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/fly/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/swin3d_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/swin3d_results.json
 ```
 
 ## Training Code
@@ -45,27 +45,27 @@ Put the Table 3 checkpoints in `/content/drive/MyDrive/reproduce/table3/` and re
 ### TimeSformer
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table3
+%cd /content/drive/MyDrive/xxx/reproduce/table3
 
 !python train_fly_timesformer.py \
-    --train_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/train/" \
-    --train_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/train/" \
+    --train_video_dir /content/drive/MyDrive/xxx/fly/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/fly/labels/train/ \
     --seed 1337 \
     --val_split_seed 123 \
-    --model_save_dir /content/drive/MyDrive/reproduce/table3/checkpoints/fly_timesformer
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/table3/fly_timesformer
 ```
 
 ### Video Swin-T
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table3
+%cd /content/drive/MyDrive/xxx/reproduce/table3
 
 !python train_fly_swin3d.py \
-    --train_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/train/" \
-    --train_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/train/" \
+    --train_video_dir /content/drive/MyDrive/xxx/fly/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/fly/labels/train/ \
     --seed 123 \
     --val_split_seed 123 \
-    --model_save_dir /content/drive/MyDrive/reproduce/table3/checkpoints/fly_swin3d
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/table3/fly_swin3d
 ```
 
 ## Seed Design
@@ -83,8 +83,8 @@ Change `--seed` for repeated runs, but keep `--val_split_seed 123` so every run 
 
 | Argument | Swin-T default | TimeSformer default | Description |
 |---|---:|---:|---|
-| `--train_video_dir` | `data/fly/videos/train` | same | Training-video directory |
-| `--train_label_dir` | `data/fly/labels/train` | same | Training-label directory |
+| `--train_video_dir` | `data/fly/videos/train` | same | Google Drive folder containing training videos |
+| `--train_label_dir` | `data/fly/labels/train` | same | Google Drive folder containing training-label CSV files |
 | `--seed` | `123` | `1337` | General random seed |
 | `--val_split_seed` | `123` | `123` | Fixed validation-split seed |
 | `--validation_ratio` | `0.15` | `0.15` | Validation fraction |
@@ -93,7 +93,7 @@ Change `--seed` for repeated runs, but keep `--val_split_seed 123` so every run 
 | `--num_epochs` | `5` | `5` | Training epochs |
 | `--base_lr` | `3.8e-5` | `3e-5` | Learning rate |
 | `--window_size` / `--stride` | `16` / `4` | `16` / `4` | Temporal window and stride |
-| `--model_save_dir` | `checkpoints/fly_swin3d` | `checkpoints/fly_timesformer` | Output directory |
+| `--model_save_dir` | `checkpoints/fly_swin3d` | `checkpoints/fly_timesformer` | Google Drive folder used to save checkpoints and logs |
 | `--use_class_weights` | off | off | Enable inverse-frequency weights |
 | `--hf_model` | — | `facebook/timesformer-base-finetuned-k400` | Hugging Face backbone |
 
@@ -101,14 +101,25 @@ Change `--seed` for repeated runs, but keep `--val_split_seed 123` so every run 
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--model_path` | required | `.pth` checkpoint |
-| `--test_video_dir` | `data/fly/videos/test` | Test-video directory |
-| `--test_label_dir` | `data/fly/labels/test` | Test-label directory |
+| `--model_path` | required | Location of the `.pth` checkpoint on Google Drive |
+| `--test_video_dir` | `data/fly/videos/test` | Google Drive folder containing test videos |
+| `--test_label_dir` | `data/fly/labels/test` | Google Drive folder containing test-label CSV files |
 | `--batch_size` | `8` | Evaluation batch size |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
 | `--smooth_window_size` | `1` | Temporal smoothing window |
-| `--save_cm` | none | Confusion-matrix PNG path |
-| `--save_results` | none | Metrics JSON path |
+| `--save_cm` | none | Google Drive path where the confusion-matrix PNG is saved |
+| `--save_results` | none | Google Drive path where the metrics JSON is saved |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--train_video_dir /content/drive/MyDrive/xxx/fly/videos/train
+--train_label_dir /content/drive/MyDrive/xxx/fly/labels/train
+--test_video_dir /content/drive/MyDrive/xxx/fly/videos/test
+--test_label_dir /content/drive/MyDrive/xxx/fly/labels/test
+--model_save_dir /content/drive/MyDrive/xxx/outputs
+```
 
 ## Behavior Remapping
 

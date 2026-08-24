@@ -12,32 +12,32 @@ Run this cell once in Colab:
 
 ## Evaluation Code
 
-The commands below assume the repository is stored in `/content/drive/MyDrive/reproduce`. Put the downloaded checkpoints in `table1/` and rename them as shown, or change only `--model_path` to the real filename.
+The paths below are Google Drive examples. Replace the `xxx` section with the folders you created in your own Drive.
 
 ### TimeSformer — Fold 1
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table1
+%cd /content/drive/MyDrive/xxx/reproduce/table1
 
 !python eval_timesformer.py \
-    --model_path /content/drive/MyDrive/reproduce/table1/table1_timesformer_fold1.pth \
-    --base_video_dir /content/drive/MyDrive/traindata/kuo/video/train/crop/resized \
-    --label_dir /content/drive/MyDrive/traindata/kuo/label_interval \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/table1_timesformer_fold1.pth \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
     --test_folds 1 \
-    --save_cm /content/drive/MyDrive/reproduce/table1/timesformer_fold1_cm.png
+    --save_cm /content/drive/MyDrive/xxx/results/timesformer_fold1_cm.png
 ```
 
 ### Video Swin-T — Fold 1
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table1
+%cd /content/drive/MyDrive/xxx/reproduce/table1
 
 !python eval_swin3d.py \
-    --model_path /content/drive/MyDrive/reproduce/table1/table1_swin3d_fold1.pth \
-    --base_video_dir /content/drive/MyDrive/traindata/kuo/video/train/crop/resized \
-    --label_dir /content/drive/MyDrive/traindata/kuo/label_interval \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/table1_swin3d_fold1.pth \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
     --test_folds 1 \
-    --save_cm /content/drive/MyDrive/reproduce/table1/swin3d_fold1_cm.png
+    --save_cm /content/drive/MyDrive/xxx/results/swin3d_fold1_cm.png
 ```
 
 For Fold 2 or Fold 3, use that fold's checkpoint and change `--test_folds` to `2` or `3`.
@@ -49,29 +49,29 @@ These are complete Fold 1 examples. The checkpoints and training log are written
 ### TimeSformer — Fold 1
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table1
+%cd /content/drive/MyDrive/xxx/reproduce/table1
 
 !python train_timesformer.py \
-    --base_video_dir /content/drive/MyDrive/traindata/kuo/video/train/crop/resized \
-    --label_dir /content/drive/MyDrive/traindata/kuo/label_interval \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
     --test_folds 1 \
     --train_folds 3 2 \
     --seed 2025 \
-    --model_save_dir /content/drive/MyDrive/reproduce/table1/checkpoints/timesformer
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/table1/timesformer
 ```
 
 ### Video Swin-T — Fold 1
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/table1
+%cd /content/drive/MyDrive/xxx/reproduce/table1
 
 !python train_swin3d.py \
-    --base_video_dir /content/drive/MyDrive/traindata/kuo/video/train/crop/resized \
-    --label_dir /content/drive/MyDrive/traindata/kuo/label_interval \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
     --test_folds 1 \
     --train_folds 3 2 \
     --seed 2025 \
-    --model_save_dir /content/drive/MyDrive/reproduce/table1/checkpoints/swin3d
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/table1/swin3d
 ```
 
 Use these fold pairs for the other runs:
@@ -94,8 +94,8 @@ GPU kernels, mixed precision and multi-worker loading can still cause small run-
 
 | Argument | Swin-T default | TimeSformer default | Description |
 |---|---:|---:|---|
-| `--base_video_dir` | `data/videos` | `data/videos` | Root containing fold folders `1/`, `2/`, `3/` |
-| `--label_dir` | `data/labels` | `data/labels` | One-hot frame-label CSV directory |
+| `--base_video_dir` | `data/videos` | `data/videos` | Location on Google Drive containing fold folders `1/`, `2/`, `3/` |
+| `--label_dir` | `data/labels` | `data/labels` | Location on Google Drive containing one-hot frame-label CSV files |
 | `--test_folds` | `1` | `1` | Held-out fold(s) |
 | `--train_folds` | `3 2` | `3 2` | Training fold(s) |
 | `--seed` | `2025` | `2025` | General random seed |
@@ -104,7 +104,7 @@ GPU kernels, mixed precision and multi-worker loading can still cause small run-
 | `--num_epochs` | `5` | `5` | Training epochs |
 | `--base_lr` | `3.8e-5` | `3e-5` | Learning rate |
 | `--window_size` / `--stride` | `16` / `4` | `16` / `4` | Temporal window and stride |
-| `--model_save_dir` | `checkpoints/swin3d` | `checkpoints/timesformer` | Output directory |
+| `--model_save_dir` | `checkpoints/swin3d` | `checkpoints/timesformer` | Google Drive folder used to save checkpoints and logs |
 | `--use_class_weights` | off | off | Enable inverse-frequency weights |
 | `--hf_model` | — | `facebook/timesformer-base-finetuned-k400` | Hugging Face backbone |
 
@@ -112,14 +112,24 @@ GPU kernels, mixed precision and multi-worker loading can still cause small run-
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--model_path` | required | `.pth` checkpoint to load |
-| `--base_video_dir` | `data/videos` | Root containing the test fold |
-| `--label_dir` | `data/labels` | Label CSV directory |
+| `--model_path` | required | Location of the `.pth` checkpoint on Google Drive |
+| `--base_video_dir` | `data/videos` | Google Drive folder containing the test fold |
+| `--label_dir` | `data/labels` | Google Drive folder containing label CSV files |
 | `--test_folds` | `1` | Fold(s) to evaluate |
 | `--batch_size` | `8` | Evaluation batch size |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
 | `--smooth_window_size` | `1` | Optional temporal smoothing |
-| `--save_cm` | none | Confusion-matrix image path |
+| `--save_cm` | none | Google Drive path where the confusion-matrix image is saved |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--base_video_dir /content/drive/MyDrive/xxx/videos
+--label_dir /content/drive/MyDrive/xxx/labels
+--model_save_dir /content/drive/MyDrive/xxx/outputs
+--save_cm /content/drive/MyDrive/xxx/results/confusion_matrix.png
+```
 
 ## Behavior Classes
 

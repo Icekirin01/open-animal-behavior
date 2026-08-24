@@ -15,14 +15,14 @@ Run this cell once in Colab:
 ### TimeSformer — 75% data, video seed 42, Fold 1
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure4
+%cd /content/drive/MyDrive/xxx/reproduce/figure4
 
 !python eval_timesformer_ratio.py \
-    --model_path /content/drive/MyDrive/reproduce/figure4/figure4_vitb_fold1_0.75_42.pth \
-    --base_video_dir /content/drive/MyDrive/traindata/kuo/video/train/crop/resized \
-    --label_dir /content/drive/MyDrive/traindata/kuo/label_interval \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure4_vitb_fold1_0.75_42.pth \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
     --test_folds 1 \
-    --save_cm /content/drive/MyDrive/reproduce/figure4/timesformer_ratio075_fold1_cm.png
+    --save_cm /content/drive/MyDrive/xxx/results/timesformer_ratio075_fold1_cm.png
 ```
 
 ### Video Swin-T — 75% data, video seed 42, Fold 1
@@ -30,14 +30,14 @@ Run this cell once in Colab:
 Put the Swin-T checkpoint in the shown location, or replace its filename with the real one.
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure4
+%cd /content/drive/MyDrive/xxx/reproduce/figure4
 
 !python eval_swin3d_ratio.py \
-    --model_path /content/drive/MyDrive/reproduce/figure4/figure4_swin3d_fold1_0.75_42.pth \
-    --base_video_dir /content/drive/MyDrive/traindata/kuo/video/train/crop/resized \
-    --label_dir /content/drive/MyDrive/traindata/kuo/label_interval \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure4_swin3d_fold1_0.75_42.pth \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
     --test_folds 1 \
-    --save_cm /content/drive/MyDrive/reproduce/figure4/swin3d_ratio075_fold1_cm.png
+    --save_cm /content/drive/MyDrive/xxx/results/swin3d_ratio075_fold1_cm.png
 ```
 
 Evaluation does not need `--train_data_ratio`; that value is already represented by the checkpoint being loaded.
@@ -47,33 +47,33 @@ Evaluation does not need `--train_data_ratio`; that value is already represented
 ### TimeSformer — 75% data, video seed 42, Fold 1
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure4
+%cd /content/drive/MyDrive/xxx/reproduce/figure4
 
 !python train_timesformer_ratio.py \
-    --base_video_dir /content/drive/MyDrive/traindata/kuo/video/train/crop/resized \
-    --label_dir /content/drive/MyDrive/traindata/kuo/label_interval \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
     --test_folds 1 \
     --train_folds 3 2 \
     --train_data_ratio 0.75 \
     --video_split_seed 42 \
     --seed 2025 \
-    --model_save_dir /content/drive/MyDrive/reproduce/figure4/checkpoints/timesformer_ratio
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure4/timesformer_ratio
 ```
 
 ### Video Swin-T — 75% data, video seed 42, Fold 1
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure4
+%cd /content/drive/MyDrive/xxx/reproduce/figure4
 
 !python train_swin3d_ratio.py \
-    --base_video_dir /content/drive/MyDrive/traindata/kuo/video/train/crop/resized \
-    --label_dir /content/drive/MyDrive/traindata/kuo/label_interval \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
     --test_folds 1 \
     --train_folds 3 2 \
     --train_data_ratio 0.75 \
     --video_split_seed 42 \
     --seed 2025 \
-    --model_save_dir /content/drive/MyDrive/reproduce/figure4/checkpoints/swin3d_ratio
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure4/swin3d_ratio
 ```
 
 For Fold 2 use `--test_folds 2 --train_folds 1 3`; for Fold 3 use `--test_folds 3 --train_folds 1 2`. Repeat the full set for every data ratio and video-selection seed used in the figure.
@@ -92,8 +92,8 @@ Even with fixed seeds, GPU nondeterminism, mixed precision and multi-worker load
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--base_video_dir` | `data/videos` | Root containing fold folders |
-| `--label_dir` | `data/labels` | One-hot frame-label CSV directory |
+| `--base_video_dir` | `data/videos` | Google Drive folder containing the fold folders |
+| `--label_dir` | `data/labels` | Google Drive folder containing one-hot frame-label CSV files |
 | `--test_folds` | `1` | Held-out fold(s) |
 | `--train_folds` | `3 2` | Training fold(s) |
 | `--train_data_ratio` | `1.0` | Fraction of training videos retained |
@@ -104,21 +104,31 @@ Even with fixed seeds, GPU nondeterminism, mixed precision and multi-worker load
 | `--num_epochs` | `5` | Training epochs |
 | `--base_lr` | Swin-T: `3.8e-5`; TimeSformer: `3e-5` | Learning rate |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
-| `--model_save_dir` | model-specific | Checkpoint/log directory |
+| `--model_save_dir` | model-specific | Google Drive folder used to save checkpoints and logs |
 | `--hf_model` | `facebook/timesformer-base-finetuned-k400` | TimeSformer only |
 
 ### Evaluation
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--model_path` | required | Ratio-specific `.pth` checkpoint |
-| `--base_video_dir` | `data/videos` | Root containing the held-out fold |
-| `--label_dir` | `data/labels` | Label CSV directory |
+| `--model_path` | required | Location of the ratio-specific `.pth` checkpoint on Google Drive |
+| `--base_video_dir` | `data/videos` | Google Drive folder containing the held-out fold |
+| `--label_dir` | `data/labels` | Google Drive folder containing label CSV files |
 | `--test_folds` | `1` | Fold(s) to evaluate |
 | `--batch_size` | `8` | Evaluation batch size |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
 | `--smooth_window_size` | `1` | Temporal smoothing window |
-| `--save_cm` | none | Confusion-matrix image path |
+| `--save_cm` | none | Google Drive path where the confusion-matrix image is saved |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--base_video_dir /content/drive/MyDrive/xxx/videos
+--label_dir /content/drive/MyDrive/xxx/labels
+--model_save_dir /content/drive/MyDrive/xxx/outputs
+--save_cm /content/drive/MyDrive/xxx/results/confusion_matrix.png
+```
 
 ## 3-Fold Cross-Validation
 

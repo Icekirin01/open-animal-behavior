@@ -15,15 +15,15 @@ Run this cell once in Colab:
 ### Evaluate the provided Figure 6 checkpoint
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure6
+%cd /content/drive/MyDrive/xxx/reproduce/figure6
 
 !python crossdomain_eval.py \
-    --model_path /content/drive/MyDrive/reproduce/figure6/kinetics400_ratio0.5_42.pth \
-    --test_video_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/video/test/" \
-    --test_label_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/onehot/" \
-    --output_dir /content/drive/MyDrive/reproduce/figure6/results/crossdomain \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/kinetics400_ratio0.5_42.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/new_domain/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/new_domain/labels/test/ \
+    --output_dir /content/drive/MyDrive/xxx/results/crossdomain \
     --save_cm \
-    --save_results /content/drive/MyDrive/reproduce/figure6/results/crossdomain/results.json
+    --save_results /content/drive/MyDrive/xxx/results/crossdomain/results.json
 ```
 
 ### Zero-shot evaluation without additional training
@@ -31,54 +31,54 @@ Run this cell once in Colab:
 Replace `mouse_source_pretrained.pth` with the source-domain checkpoint you want to transfer.
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure6
+%cd /content/drive/MyDrive/xxx/reproduce/figure6
 
 !python zeroshot_eval.py \
-    --model_path /content/drive/MyDrive/reproduce/figure6/mouse_source_pretrained.pth \
-    --test_video_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/video/test/" \
-    --test_label_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/onehot/" \
-    --output_dir /content/drive/MyDrive/reproduce/figure6/results/zeroshot \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/mouse_source_pretrained.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/new_domain/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/new_domain/labels/test/ \
+    --output_dir /content/drive/MyDrive/xxx/results/zeroshot \
     --seed 2025 \
     --save_cm
 ```
 
 ## Training Code
 
-The training examples assume the new-domain training videos are in the corresponding `video/train/` folder and that `onehot/` contains their label CSV files.
+The paths below are Google Drive examples. Replace `xxx` with the folders you created for the new-domain videos, labels and checkpoints.
 
 ### Fine-tune from Kinetics-400 using 50% of the videos
 
 Omitting `--pretrained_model_path` makes the script initialize from torchvision Kinetics-400 weights.
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure6
+%cd /content/drive/MyDrive/xxx/reproduce/figure6
 
 !python crossdomain_train.py \
-    --train_video_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/video/train/" \
-    --train_label_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/onehot/" \
+    --train_video_dir /content/drive/MyDrive/xxx/new_domain/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/new_domain/labels/train/ \
     --train_data_ratio 0.5 \
     --video_split_seed 42 \
     --seed 2025 \
     --val_split_seed 1337 \
     --base_lr 3.8e-5 \
-    --model_save_dir /content/drive/MyDrive/reproduce/figure6/checkpoints/kinetics400_ratio05
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure6/kinetics400_ratio05
 ```
 
 ### Fine-tune from a custom source-domain checkpoint
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure6
+%cd /content/drive/MyDrive/xxx/reproduce/figure6
 
 !python crossdomain_train.py \
-    --pretrained_model_path /content/drive/MyDrive/reproduce/figure6/mouse_source_pretrained.pth \
-    --train_video_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/video/train/" \
-    --train_label_dir "/content/drive/MyDrive/traindata/kuo_validation/video(s and g)/onehot/" \
+    --pretrained_model_path /content/drive/MyDrive/xxx/checkpoints/mouse_source_pretrained.pth \
+    --train_video_dir /content/drive/MyDrive/xxx/new_domain/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/new_domain/labels/train/ \
     --train_data_ratio 0.5 \
     --video_split_seed 42 \
     --seed 2025 \
     --val_split_seed 1337 \
     --base_lr 1e-5 \
-    --model_save_dir /content/drive/MyDrive/reproduce/figure6/checkpoints/custom_ratio05
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure6/custom_ratio05
 ```
 
 ## Seed Design
@@ -94,9 +94,9 @@ Omitting `--pretrained_model_path` makes the script initialize from torchvision 
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--pretrained_model_path` | none | Custom `.pth`; omit for Kinetics-400 initialization |
-| `--train_video_dir` | required | New-domain training videos |
-| `--train_label_dir` | required | New-domain label CSVs |
+| `--pretrained_model_path` | none | Location of a custom `.pth` checkpoint on Google Drive; omit for Kinetics-400 initialization |
+| `--train_video_dir` | required | Google Drive folder containing new-domain training videos |
+| `--train_label_dir` | required | Google Drive folder containing new-domain training-label CSV files |
 | `--train_data_ratio` | `1.0` | Fraction of training videos retained |
 | `--video_split_seed` | `42` | Video-subsampling seed |
 | `--seed` | `2025` | General random seed |
@@ -106,21 +106,33 @@ Omitting `--pretrained_model_path` makes the script initialize from torchvision 
 | `--accumulation_steps` | `2` | Gradient accumulation |
 | `--num_epochs` | `5` | Training epochs |
 | `--base_lr` | `3.8e-5` | Learning rate; typically lower for a custom checkpoint |
-| `--model_save_dir` | `checkpoints/crossdomain` | Checkpoint/log directory |
+| `--model_save_dir` | `checkpoints/crossdomain` | Google Drive folder used to save checkpoints and logs |
 
 ### Evaluation scripts
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--model_path` | required | `.pth` checkpoint |
-| `--test_video_dir` | required | Test-video directory |
-| `--test_label_dir` | required | Test-label directory |
-| `--output_dir` | zero-shot: `results/zeroshot`; cross-domain: model folder | Output directory |
+| `--model_path` | required | Location of the `.pth` checkpoint on Google Drive |
+| `--test_video_dir` | required | Google Drive folder containing test videos |
+| `--test_label_dir` | required | Google Drive folder containing test-label CSV files |
+| `--output_dir` | zero-shot: `results/zeroshot`; cross-domain: model folder | Google Drive folder used to save evaluation outputs |
 | `--batch_size` | `8` | Evaluation batch size |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
 | `--smooth_window_size` | `1` | Temporal smoothing window |
 | `--save_cm` | off | Save confusion-matrix images |
-| `--save_results` | none | JSON path; `crossdomain_eval.py` only |
+| `--save_results` | none | Google Drive path for the JSON file; `crossdomain_eval.py` only |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--pretrained_model_path /content/drive/MyDrive/xxx/checkpoints/source_model.pth
+--train_video_dir /content/drive/MyDrive/xxx/new_domain/videos/train
+--train_label_dir /content/drive/MyDrive/xxx/new_domain/labels/train
+--test_video_dir /content/drive/MyDrive/xxx/new_domain/videos/test
+--test_label_dir /content/drive/MyDrive/xxx/new_domain/labels/test
+--output_dir /content/drive/MyDrive/xxx/results
+```
 
 ## Scripts
 

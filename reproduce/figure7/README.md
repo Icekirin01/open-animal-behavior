@@ -15,29 +15,29 @@ Run this cell once in Colab:
 ### Evaluate the fine-tuned lab checkpoint
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure7
+%cd /content/drive/MyDrive/xxx/reproduce/figure7
 
 !python eval_fly_timesformer_finetune.py \
-    --model_path /content/drive/MyDrive/reproduce/figure7/fly_timesformer_ft_ratio25_vseed42_ft_full_ep2_f1no_0.5559_map_0.7001.pth \
-    --test_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/test/" \
-    --test_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/test/" \
-    --save_cm /content/drive/MyDrive/reproduce/figure7/finetune_cm.png \
-    --save_results /content/drive/MyDrive/reproduce/figure7/finetune_results.json
+    --model_path /content/drive/MyDrive/xxx/checkpoints/fly_timesformer_ft_ratio25_vseed42_ft_full_ep2_f1no_0.5559_map_0.7001.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/lab_fly/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/lab_fly/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/finetune_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/finetune_results.json
 ```
 
 ### Evaluate the stage-one open-dataset checkpoint
 
-This example assumes the open dataset is stored under `/content/drive/MyDrive/traindata/fly_open/`. Change its data paths if your folder layout differs.
+The paths below are Google Drive examples. Replace `xxx` with the locations of your open-dataset files.
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure7
+%cd /content/drive/MyDrive/xxx/reproduce/figure7
 
 !python eval_fly_timesformer_open.py \
-    --model_path /content/drive/MyDrive/reproduce/figure7/figure7_open_pretrained.pth \
-    --test_video_dir /content/drive/MyDrive/traindata/fly_open/video_dataset/test/ \
-    --test_label_dir /content/drive/MyDrive/traindata/fly_open/label_dataset/test/ \
-    --save_cm /content/drive/MyDrive/reproduce/figure7/open_cm.png \
-    --save_results /content/drive/MyDrive/reproduce/figure7/open_results.json
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure7_open_pretrained.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/open_fly/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/open_fly/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/open_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/open_results.json
 ```
 
 ## Training Code
@@ -47,14 +47,14 @@ Run stage 1 first. After it finishes, copy the best checkpoint path printed by t
 ### Stage 1 — Train TimeSformer on the open dataset
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure7
+%cd /content/drive/MyDrive/xxx/reproduce/figure7
 
 !python train_fly_timesformer_open.py \
-    --train_video_dir /content/drive/MyDrive/traindata/fly_open/video_dataset/train/ \
-    --train_label_dir /content/drive/MyDrive/traindata/fly_open/label_dataset/train/ \
+    --train_video_dir /content/drive/MyDrive/xxx/open_fly/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/open_fly/labels/train/ \
     --seed 2025 \
     --val_split_seed 123 \
-    --model_save_dir /content/drive/MyDrive/reproduce/figure7/checkpoints/open
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure7/open
 ```
 
 ### Stage 2 — Fine-tune on 25% of the lab videos
@@ -62,18 +62,18 @@ Run stage 1 first. After it finishes, copy the best checkpoint path printed by t
 The example below assumes the selected stage-one checkpoint was renamed to `figure7_open_pretrained.pth`.
 
 ```bash
-%cd /content/drive/MyDrive/reproduce/figure7
+%cd /content/drive/MyDrive/xxx/reproduce/figure7
 
 !python train_fly_timesformer_finetune.py \
-    --pretrained_model_path /content/drive/MyDrive/reproduce/figure7/figure7_open_pretrained.pth \
+    --pretrained_model_path /content/drive/MyDrive/xxx/checkpoints/figure7_open_pretrained.pth \
     --finetune_strategy full \
-    --train_video_dir "/content/drive/My Drive/IMG test IMG/video_dataset/train/" \
-    --train_label_dir "/content/drive/My Drive/IMG test IMG/label_dataset/train/" \
+    --train_video_dir /content/drive/MyDrive/xxx/lab_fly/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/lab_fly/labels/train/ \
     --train_data_ratio 0.25 \
     --video_split_seed 42 \
     --seed 2025 \
     --val_split_seed 123 \
-    --model_save_dir /content/drive/MyDrive/reproduce/figure7/checkpoints/finetune_ratio025
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure7/finetune_ratio025
 ```
 
 Use `--reinit_head` only when you intentionally want to discard the stage-one MLP head and transfer the backbone alone.
@@ -91,8 +91,8 @@ Use `--reinit_head` only when you intentionally want to discard the stage-one ML
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--train_video_dir` | `data/fly_open/videos/train` | Open-dataset training videos |
-| `--train_label_dir` | `data/fly_open/labels/train` | Open-dataset labels |
+| `--train_video_dir` | `data/fly_open/videos/train` | Google Drive folder containing open-dataset training videos |
+| `--train_label_dir` | `data/fly_open/labels/train` | Google Drive folder containing open-dataset training-label CSV files |
 | `--seed` | `2025` | General random seed |
 | `--val_split_seed` | `123` | Fixed validation-split seed |
 | `--validation_ratio` | `0.15` | Validation fraction |
@@ -100,36 +100,48 @@ Use `--reinit_head` only when you intentionally want to discard the stage-one ML
 | `--accumulation_steps` | `2` | Gradient accumulation |
 | `--num_epochs` | `5` | Training epochs |
 | `--base_lr` | `3e-5` | Learning rate |
-| `--model_save_dir` | `checkpoints/fly_timesformer_open` | Output directory |
+| `--model_save_dir` | `checkpoints/fly_timesformer_open` | Google Drive folder used to save stage-one checkpoints and logs |
 
 ### Stage 2: `train_fly_timesformer_finetune.py`
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--pretrained_model_path` | required | Stage-one `.pth` checkpoint |
+| `--pretrained_model_path` | required | Location of the stage-one `.pth` checkpoint on Google Drive |
 | `--finetune_strategy` | `full` | `full`, `head_only` or `gradual` |
 | `--reinit_head` | off | Reinitialize the MLP head before fine-tuning |
-| `--train_video_dir` | `data/fly/videos/train` | Lab training videos |
-| `--train_label_dir` | `data/fly/labels/train` | Lab training labels |
+| `--train_video_dir` | `data/fly/videos/train` | Google Drive folder containing lab training videos |
+| `--train_label_dir` | `data/fly/labels/train` | Google Drive folder containing lab training-label CSV files |
 | `--train_data_ratio` | `0.75` | Fraction of lab videos retained |
 | `--video_split_seed` | `42` | Lab video-subsampling seed |
 | `--seed` | `2025` | General random seed |
 | `--val_split_seed` | `123` | Fixed validation-split seed |
 | `--base_lr` | `3.8e-5` | Fine-tuning learning rate |
-| `--model_save_dir` | `checkpoints/fly_timesformer_finetune` | Output directory |
+| `--model_save_dir` | `checkpoints/fly_timesformer_finetune` | Google Drive folder used to save fine-tuned checkpoints and logs |
 
 ### Evaluation scripts
 
 | Argument | Default | Description |
 |---|---:|---|
-| `--model_path` | required | Open or fine-tuned `.pth` checkpoint |
-| `--test_video_dir` | dataset-specific | Test-video directory |
-| `--test_label_dir` | dataset-specific | Test-label directory |
+| `--model_path` | required | Location of an open or fine-tuned `.pth` checkpoint on Google Drive |
+| `--test_video_dir` | dataset-specific | Google Drive folder containing test videos |
+| `--test_label_dir` | dataset-specific | Google Drive folder containing test-label CSV files |
 | `--batch_size` | `8` | Evaluation batch size |
 | `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
 | `--smooth_window_size` | `1` | Temporal smoothing window |
-| `--save_cm` | none | Confusion-matrix PNG path |
-| `--save_results` | none | Metrics JSON path |
+| `--save_cm` | none | Google Drive path where the confusion-matrix PNG is saved |
+| `--save_results` | none | Google Drive path where the metrics JSON is saved |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--pretrained_model_path /content/drive/MyDrive/xxx/checkpoints/open_model.pth
+--train_video_dir /content/drive/MyDrive/xxx/lab_fly/videos/train
+--train_label_dir /content/drive/MyDrive/xxx/lab_fly/labels/train
+--test_video_dir /content/drive/MyDrive/xxx/lab_fly/videos/test
+--test_label_dir /content/drive/MyDrive/xxx/lab_fly/labels/test
+--model_save_dir /content/drive/MyDrive/xxx/outputs
+```
 
 ## Workflow
 
