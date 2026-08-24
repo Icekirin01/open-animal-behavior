@@ -1,75 +1,147 @@
-# Mouse Behavior Classification — Video-Level Data Efficiency Analysis
+# Figure 4 — Mouse Video-Level Data Efficiency
 
-Extension of the base Video Swin-T / TimeSformer pipeline with **video-level subsampling** for data efficiency experiments.
-
-Due to GPU nondeterminism, mixed precision training, and multi-worker data loading, retraining the model may produce slightly different results across runs even with the same random seed.
-
-To ensure exact reproducibility of the reported metrics, we can provide the pretrained model checkpoints used in the paper upon request.
+This experiment measures how Video Swin-T and TimeSformer performance changes when only a fixed fraction of the mouse training videos is used, while retaining the same 3-fold test protocol.
 
 ## Requirements
 
+Run this cell once in Colab:
+
 ```bash
-pip install torch torchvision transformers decord numpy pandas scikit-learn matplotlib seaborn tqdm
+!pip install torch torchvision transformers decord numpy pandas scikit-learn matplotlib seaborn tqdm
 ```
+
+## Evaluation Code
+
+### TimeSformer — 75% data, video seed 42, Fold 1
+
+```bash
+%cd /content/drive/MyDrive/xxx/reproduce/figure4
+
+!python eval_timesformer_ratio.py \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure4_vitb_fold1_0.75_42.pth \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
+    --test_folds 1 \
+    --save_cm /content/drive/MyDrive/xxx/results/timesformer_ratio075_fold1_cm.png
+```
+
+### Video Swin-T — 75% data, video seed 42, Fold 1
+
+Put the Swin-T checkpoint in the shown location, or replace its filename with the real one.
+
+```bash
+%cd /content/drive/MyDrive/xxx/reproduce/figure4
+
+!python eval_swin3d_ratio.py \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure4_swin3d_fold1_0.75_42.pth \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
+    --test_folds 1 \
+    --save_cm /content/drive/MyDrive/xxx/results/swin3d_ratio075_fold1_cm.png
+```
+
+Evaluation does not need `--train_data_ratio`; that value is already represented by the checkpoint being loaded.
+
+## Training Code
+
+### TimeSformer — 75% data, video seed 42, Fold 1
+
+```bash
+%cd /content/drive/MyDrive/xxx/reproduce/figure4
+
+!python train_timesformer_ratio.py \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
+    --test_folds 1 \
+    --train_folds 3 2 \
+    --train_data_ratio 0.75 \
+    --video_split_seed 42 \
+    --seed 2025 \
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure4/timesformer_ratio
+```
+
+### Video Swin-T — 75% data, video seed 42, Fold 1
+
+```bash
+%cd /content/drive/MyDrive/xxx/reproduce/figure4
+
+!python train_swin3d_ratio.py \
+    --base_video_dir /content/drive/MyDrive/xxx/videos \
+    --label_dir /content/drive/MyDrive/xxx/labels \
+    --test_folds 1 \
+    --train_folds 3 2 \
+    --train_data_ratio 0.75 \
+    --video_split_seed 42 \
+    --seed 2025 \
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure4/swin3d_ratio
+```
+
+For Fold 2 use `--test_folds 2 --train_folds 1 3`; for Fold 3 use `--test_folds 3 --train_folds 1 2`. Repeat the full set for every data ratio and video-selection seed used in the figure.
+
+## Seed Design
+
+- `--seed` controls model initialization, augmentation and data-loader randomness. Keep it equal when comparing backbones.
+- `--video_split_seed` controls which training videos are retained when `--train_data_ratio < 1.0`. Use the experiment seeds `42`, `123` and `999`.
+- The fold folders define train/test membership and must not change between ratios.
+
+Even with fixed seeds, GPU nondeterminism, mixed precision and multi-worker loading can cause small metric differences. Use the paper checkpoint when exact reproduction is required.
 
 ## Arguments
 
-| Argument | Default | Description |
-|---|---|---|
-| `--train_data_ratio` | `1.0` | Fraction of training videos to use (0.0–1.0) |
-| `--video_split_seed` | `42` | RNG seed for video selection (42，123，999) |
+### Training
 
-All other arguments are identical to the base scripts — see the base README.
+| Argument | Default | Description |
+|---|---:|---|
+| `--base_video_dir` | `data/videos` | Google Drive folder containing the fold folders |
+| `--label_dir` | `data/labels` | Google Drive folder containing one-hot frame-label CSV files |
+| `--test_folds` | `1` | Held-out fold(s) |
+| `--train_folds` | `3 2` | Training fold(s) |
+| `--train_data_ratio` | `1.0` | Fraction of training videos retained |
+| `--video_split_seed` | `42` | Video-subsampling seed |
+| `--seed` | `2025` | General random seed |
+| `--batch_size` | `8` | Batch size |
+| `--accumulation_steps` | `2` | Gradient accumulation |
+| `--num_epochs` | `5` | Training epochs |
+| `--base_lr` | Swin-T: `3.8e-5`; TimeSformer: `3e-5` | Learning rate |
+| `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
+| `--model_save_dir` | model-specific | Google Drive folder used to save checkpoints and logs |
+| `--hf_model` | `facebook/timesformer-base-finetuned-k400` | TimeSformer only |
+
+### Evaluation
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--model_path` | required | Location of the ratio-specific `.pth` checkpoint on Google Drive |
+| `--base_video_dir` | `data/videos` | Google Drive folder containing the held-out fold |
+| `--label_dir` | `data/labels` | Google Drive folder containing label CSV files |
+| `--test_folds` | `1` | Fold(s) to evaluate |
+| `--batch_size` | `8` | Evaluation batch size |
+| `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
+| `--smooth_window_size` | `1` | Temporal smoothing window |
+| `--save_cm` | none | Google Drive path where the confusion-matrix image is saved |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--base_video_dir /content/drive/MyDrive/xxx/videos
+--label_dir /content/drive/MyDrive/xxx/labels
+--model_save_dir /content/drive/MyDrive/xxx/outputs
+--save_cm /content/drive/MyDrive/xxx/results/confusion_matrix.png
+```
 
 ## 3-Fold Cross-Validation
 
-| Fold | `--test_folds` | `--train_folds` |
-|------|----------------|-----------------|
+| Run | `--test_folds` | `--train_folds` |
+|---|---:|---|
 | Fold 1 | `1` | `3 2` |
 | Fold 2 | `2` | `1 3` |
 | Fold 3 | `3` | `1 2` |
 
-## Training
-
-```bash
-# Video Swin-T — 50% of training videos, 3-fold CV
-python train_swin3d_ratio.py --test_folds 1 --train_folds 3 2 --train_data_ratio 0.5 --video_split_seed 42
-python train_swin3d_ratio.py --test_folds 2 --train_folds 1 3 --train_data_ratio 0.5 --video_split_seed 42
-python train_swin3d_ratio.py --test_folds 3 --train_folds 1 2 --train_data_ratio 0.5 --video_split_seed 42
-
-# Custom paths
-python train_swin3d_ratio.py --base_video_dir /path/to/videos --label_dir /path/to/labels
-
-# TimeSformer — 50% of training videos, 3-fold CV
-python train_timesformer_ratio.py --test_folds 1 --train_folds 3 2 --train_data_ratio 0.5 --video_split_seed 42
-python train_timesformer_ratio.py --test_folds 2 --train_folds 1 3 --train_data_ratio 0.5 --video_split_seed 42
-python train_timesformer_ratio.py --test_folds 3 --train_folds 1 2 --train_data_ratio 0.5 --video_split_seed 42
-
-# Custom paths
-python train_timesformer_ratio.py --base_video_dir /path/to/videos --label_dir /path/to/labels
-```
-
-## Evaluation
-
-```bash
-# Video Swin-T
-python eval_swin3d_ratio.py --model_path checkpoints/swin3d_ratio/model.pth --test_folds 1
-
-# TimeSformer
-python eval_timesformer_ratio.py --model_path checkpoints/timesformer_ratio/model.pth --test_folds 1
-
-# Save confusion matrix image
-python eval_swin3d_ratio.py --model_path model.pth --test_folds 1 --save_cm cm_fold1.png
-```
-
 ## Output Naming Convention
 
-Checkpoint filenames encode the ratio and seed:
-
-```
+```text
 {model}_train_{folds}_val_{folds}_ratio{pct}_vseed{seed}_ep{N}_f1_{val}_map_{val}.pth
 ```
 
-Example: `swin3d_train_3_2_val_1_ratio50_vseed42_ep5_f1_0.6123_map_0.7456.pth`
-
-At `ratio=100` (full data), the `_vseed` suffix is omitted.
+Example: `swin3d_train_3_2_val_1_ratio75_vseed42_ep5_f1_0.6123_map_0.7456.pth`. At 100% data, the `_vseed` suffix is omitted.

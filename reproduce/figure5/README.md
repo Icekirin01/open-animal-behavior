@@ -1,79 +1,146 @@
-# Fly Copulation — Video-Level Data Efficiency Analysis
+# Figure 5 — Fly Video-Level Data Efficiency
 
-Video Swin-T / TimeSformer (K400 pretrained) + MLP Head + CE Loss.
-Stratified video-level split + video-level subsampling for data efficiency experiments.
-
-Best model selected by **val F1-macro excluding 'others'**.
+This experiment measures Video Swin-T and TimeSformer performance at different fractions of the fly training videos. Video selection is stratified before the normal train/validation split.
 
 ## Requirements
 
+Run this cell once in Colab:
+
 ```bash
-pip install torch torchvision transformers decord numpy pandas scikit-learn matplotlib seaborn tqdm
+!pip install torch torchvision transformers decord numpy pandas scikit-learn matplotlib seaborn tqdm
+```
+
+## Evaluation Code
+
+The paths below are Google Drive examples. Replace `xxx` with the folder structure you created in your own Drive.
+
+### TimeSformer — 75% data, video seed 42
+
+```bash
+%cd /content/drive/MyDrive/xxx/reproduce/figure5
+
+!python eval_fly_timesformer_ratio.py \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure5_timesformer_ratio0.75_42.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/fly/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/fly/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/timesformer_ratio075_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/timesformer_ratio075_results.json
+```
+
+### Video Swin-T — 75% data, video seed 42
+
+```bash
+%cd /content/drive/MyDrive/xxx/reproduce/figure5
+
+!python eval_fly_swin3d_ratio.py \
+    --model_path /content/drive/MyDrive/xxx/checkpoints/figure5_swin3d_ratio0.75_42.pth \
+    --test_video_dir /content/drive/MyDrive/xxx/fly/videos/test/ \
+    --test_label_dir /content/drive/MyDrive/xxx/fly/labels/test/ \
+    --save_cm /content/drive/MyDrive/xxx/results/swin3d_ratio075_cm.png \
+    --save_results /content/drive/MyDrive/xxx/results/swin3d_ratio075_results.json
+```
+
+Evaluation does not accept a ratio argument; the loaded checkpoint determines which training ratio is being evaluated.
+
+## Training Code
+
+### TimeSformer — 75% data, video seed 42
+
+```bash
+%cd /content/drive/MyDrive/xxx/reproduce/figure5
+
+!python train_fly_timesformer_ratio.py \
+    --train_video_dir /content/drive/MyDrive/xxx/fly/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/fly/labels/train/ \
+    --train_data_ratio 0.75 \
+    --video_split_seed 42 \
+    --seed 2025 \
+    --val_split_seed 123 \
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure5/fly_timesformer_ratio
+```
+
+### Video Swin-T — 75% data, video seed 42
+
+```bash
+%cd /content/drive/MyDrive/xxx/reproduce/figure5
+
+!python train_fly_swin3d_ratio.py \
+    --train_video_dir /content/drive/MyDrive/xxx/fly/videos/train/ \
+    --train_label_dir /content/drive/MyDrive/xxx/fly/labels/train/ \
+    --train_data_ratio 0.75 \
+    --video_split_seed 42 \
+    --seed 2025 \
+    --val_split_seed 123 \
+    --model_save_dir /content/drive/MyDrive/xxx/outputs/figure5/fly_swin3d_ratio
+```
+
+Change `--train_data_ratio` and `--video_split_seed` together for the other Figure 5 conditions. The best checkpoint is selected by validation macro F1 excluding `others`.
+
+## Seed Design
+
+- `--seed` controls model initialization, augmentation and shuffle; the default is `2025` for both backbones.
+- `--val_split_seed` controls the train/validation split after video subsampling. Keep it fixed at `123`.
+- `--video_split_seed` controls which videos are retained at partial ratios. Change this across subsampling repeats, for example `42`, `123` and `999`.
+
+## Arguments
+
+### Training
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--train_video_dir` | `data/fly/videos/train` | Google Drive folder containing training videos |
+| `--train_label_dir` | `data/fly/labels/train` | Google Drive folder containing training-label CSV files |
+| `--train_data_ratio` | `1.0` | Fraction of training videos retained |
+| `--video_split_seed` | `42` | Video-subsampling seed |
+| `--seed` | `2025` | General random seed |
+| `--val_split_seed` | `123` | Fixed validation-split seed |
+| `--validation_ratio` | `0.15` | Validation fraction |
+| `--batch_size` | `8` | Batch size |
+| `--accumulation_steps` | `2` | Gradient accumulation |
+| `--num_epochs` | `5` | Training epochs |
+| `--base_lr` | `3.8e-5` | Learning rate |
+| `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
+| `--model_save_dir` | model-specific | Google Drive folder used to save checkpoints and logs |
+| `--use_class_weights` | off | Enable inverse-frequency weights |
+
+### Evaluation
+
+| Argument | Default | Description |
+|---|---:|---|
+| `--model_path` | required | Location of the ratio-specific `.pth` checkpoint on Google Drive |
+| `--test_video_dir` | `data/fly/videos/test` | Google Drive folder containing test videos |
+| `--test_label_dir` | `data/fly/labels/test` | Google Drive folder containing test-label CSV files |
+| `--batch_size` | `8` | Evaluation batch size |
+| `--window_size` / `--stride` | `16` / `4` | Temporal window and stride |
+| `--smooth_window_size` | `1` | Temporal smoothing window |
+| `--save_cm` | none | Google Drive path where the confusion-matrix PNG is saved |
+| `--save_results` | none | Google Drive path where the metrics JSON is saved |
+
+### Google Drive Path Examples
+
+```text
+--model_path /content/drive/MyDrive/xxx/checkpoints/model.pth
+--train_video_dir /content/drive/MyDrive/xxx/fly/videos/train
+--train_label_dir /content/drive/MyDrive/xxx/fly/labels/train
+--test_video_dir /content/drive/MyDrive/xxx/fly/videos/test
+--test_label_dir /content/drive/MyDrive/xxx/fly/labels/test
+--model_save_dir /content/drive/MyDrive/xxx/outputs
 ```
 
 ## Behavior Remapping
 
-Original 5 classes → Selected 4 classes:
-
-| Original | → Selected |
+| Original class | Selected class |
 |---|---|
-| wing_extension | wing_extension |
-| circle | circle |
-| copul_attempt | **others** (merged) |
-| copulation | copulation |
-| others | others |
-
-## Arguments
-
-| Argument | Swin3D Default | TimeSformer Default | Description |
-|---|---|---|---|
-| `--train_data_ratio` | `1.0` | `1.0` | Fraction of training videos to use |
-| `--video_split_seed` | `42` | `42` | RNG seed for video subsampling |
-| `--seed` | `2025` | `2025` | General seed (model init, augmentation) |
-| `--val_split_seed` | `123` | `123` | Val split seed (**FIXED**) |
-| `--base_lr` | `3.8e-5` | `3.8e-5` | Learning rate |
-| `--model_save_dir` | `checkpoints/fly_swin3d_ratio` | `checkpoints/fly_timesformer_ratio` | Checkpoint dir |
-
-## Training
-
-```bash
-# Swin3D
-python train_fly_swin3d_ratio.py \
-  --train_video_dir /path/to/videos/train \
-  --train_label_dir /path/to/labels/train \
-  --train_data_ratio 0.75 --video_split_seed 42
-
-# TimeSformer
-python train_fly_timesformer_ratio.py \
-  --train_video_dir /path/to/videos/train \
-  --train_label_dir /path/to/labels/train \
-  --train_data_ratio 0.75 --video_split_seed 42
-```
-
-## Evaluation
-
-```bash
-# Swin3D
-python eval_fly_swin3d_ratio.py \
-  --model_path checkpoints/fly_swin3d_ratio/model.pth \
-  --test_video_dir /path/to/videos/test \
-  --test_label_dir /path/to/labels/test
-
-# TimeSformer
-python eval_fly_timesformer_ratio.py \
-  --model_path checkpoints/fly_timesformer_ratio/model.pth \
-  --test_video_dir /path/to/videos/test \
-  --test_label_dir /path/to/labels/test
-```
+| `wing_extension` | `wing_extension` |
+| `circle` | `circle` |
+| `copul_attempt` | `others` |
+| `copulation` | `copulation` |
+| `others` | `others` |
 
 ## Output Naming Convention
 
-```
-fly_{model}_{ratio_tag}{_vseed}{_seed}_ep{N}_f1no_{val}_map_{val}.pth
+```text
+fly_{model}_{ratio_tag}{_vseed}_seed{seed}_ep{N}_f1no_{val}_map_{val}.pth
 ```
 
-Examples:
-- `fly_swin3d_ratio75_vseed42_seed2025_ep3_f1no_0.7234_map_0.8123.pth`
-- `fly_timesformer_ratio100_seed2025_ep5_f1no_0.6987_map_0.7890.pth`
-
-At `ratio=100`, the `_vseed` suffix is omitted.
+Examples: `fly_swin3d_ratio75_vseed42_seed2025_ep3_f1no_0.7234_map_0.8123.pth` and `fly_timesformer_ratio100_seed2025_ep5_f1no_0.6987_map_0.7890.pth`. At 100% data, the `_vseed` suffix is omitted.
