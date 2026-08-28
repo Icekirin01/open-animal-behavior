@@ -16,13 +16,14 @@ they are what keep memory flat across many long videos:
     from accumulating video-to-video.
   · frame_log is dropped per video.
 
-The GUI wrapper adds: cache each source video to fast local disk first, write
-the cropped clip to a local output dir (used by training) AND mirror it to a
-Drive backup dir, skip already-done videos, delete the original local cache,
-and yield progress dicts the GUI renders in its shared progress card.
+The GUI wrapper adds: stage pending source videos to fast local disk with four
+copy workers, write each cropped clip to a local output dir (used by training)
+AND mirror it to a Drive backup dir, skip already-done videos, retain the
+source cache for fast reruns, and yield throttled progress dicts for the GUI.
 """
 
 import os, glob, gc, shutil, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -39,8 +40,12 @@ MISS_TOLERANCE = 99999
 
 VIDEO_EXTS = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv')
 
-# Where original videos are copied before cropping (fast local SSD, not Drive).
-LOCAL_CACHE_DIR = "/content/oab_precrop_cache"
+# Where original videos are staged before cropping (fast local SSD, not Drive).
+# Keep the same location and four-copy pipeline as the proven Colab script.
+LOCAL_CACHE_DIR = "/content/_in"
+STAGE_WORKERS = 4
+MAX_LOCAL_DISK_FRACTION = 0.85
+GUI_PROGRESS_INTERVAL_S = 1.0
 
 
 # ====================== Smoothing + crop (verbatim) ======================
@@ -178,6 +183,37 @@ def cache_video_to_local(src_path, cache_dir=LOCAL_CACHE_DIR):
         return src_path
 
 
+def _stage_videos(video_paths, cache_dir=LOCAL_CACHE_DIR,
+                  workers=STAGE_WORKERS):
+    """Stage all input videos concurrently, as in the proven Colab script.
+
+    Returns futures rather than blocking internally so ``preprocess_folder``
+    can continue streaming staging progress to Gradio. Existing same-sized
+    local files are reused without copying.
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    pool = ThreadPoolExecutor(max_workers=max(1, int(workers)))
+    futures = {
+        pool.submit(cache_video_to_local, src, cache_dir): src
+        for src in video_paths
+    }
+    return pool, futures
+
+
+def _bytes_needed_for_stage(video_paths, cache_dir=LOCAL_CACHE_DIR):
+    """Return bytes that still need to be copied into the local stage."""
+    needed = 0
+    for src in video_paths:
+        try:
+            dst = os.path.join(cache_dir, os.path.basename(src))
+            src_size = os.path.getsize(src)
+            if not (os.path.exists(dst) and os.path.getsize(dst) == src_size):
+                needed += src_size
+        except OSError:
+            pass
+    return needed
+
+
 def _frame_count(path):
     """Frame count of a video via cv2, or -1 if unreadable."""
     import cv2
@@ -248,14 +284,14 @@ def _load_model(model_path):
 
 def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
                       crop_padding=CROP_PADDING, device=None, skip_existing=True,
-                      delete_source_cache=True):
+                      delete_source_cache=False):
     """Full preprocess for every video in ``video_dir``:
 
-        1. copy the original to fast local storage (avoids Drive slowdown),
+        1. stage all pending originals to fast local storage with four workers,
         2. YOLO detect-and-crop it (single-frame predict + EMA smoothing),
         3. write the cropped clip to ``local_out_dir`` (used by training) AND
            mirror it to ``drive_out_dir`` (persistent backup, if given),
-        4. delete the original local copy to save space.
+        4. retain the local input cache by default so reruns can reuse it.
 
     Reads with cv2.VideoCapture and writes with cv2.VideoWriter, resetting the
     predictor and clearing CUDA cache per video — the memory pattern from the
@@ -291,8 +327,12 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
     n = len(videos)
     outputs = []
     model = use_cuda = precision_kw = dev = None
+    pending = []
+    local_map = {}
 
     try:
+        # Resolve completed outputs before staging. This preserves the GUI's
+        # robust resume behaviour while avoiding copies for already-done clips.
         for vi, src_path in enumerate(videos):
             out_name = _cropped_name(src_path)
             vid_name = Path(src_path).stem
@@ -320,10 +360,41 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
                            "skipped": True}
                     continue
 
-            # ---- 1. cache original to local ----
-            yield {"type": "progress", "phase": "cache", "video": vid_name,
-                   "vid_i": vi + 1, "vid_n": n, "frame": 0, "total": 1}
-            local_src = cache_video_to_local(src_path)
+            pending.append((vi, src_path))
+
+        # Match the proven Colab pipeline: copy all pending Drive videos to
+        # /content concurrently, then keep the GPU continuously fed.
+        pending_paths = [src for _, src in pending]
+        if pending_paths:
+            needed = _bytes_needed_for_stage(pending_paths)
+            free = shutil.disk_usage("/content").free
+            if needed > free * MAX_LOCAL_DISK_FRACTION:
+                raise RuntimeError(
+                    f"Not enough local disk to stage videos: need "
+                    f"{needed / 1e9:.1f} GB, free {free / 1e9:.1f} GB"
+                )
+
+            pool, futures = _stage_videos(pending_paths)
+            staged = 0
+            try:
+                for future in as_completed(futures):
+                    src_path = futures[future]
+                    local_map[src_path] = future.result()
+                    staged += 1
+                    yield {"type": "progress", "phase": "cache",
+                           "video": Path(src_path).stem,
+                           "vid_i": staged, "vid_n": len(pending_paths),
+                           "frame": staged, "total": len(pending_paths)}
+            finally:
+                pool.shutdown(wait=True)
+
+        for vi, src_path in pending:
+            out_name = _cropped_name(src_path)
+            vid_name = Path(src_path).stem
+            local_out = os.path.join(local_out_dir, out_name)
+            drive_out = os.path.join(drive_out_dir, out_name) if drive_out_dir else None
+
+            local_src = local_map.get(src_path, src_path)
 
             # lazy-load YOLO only when there is real work
             if model is None:
@@ -346,6 +417,7 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
             reset_tracker(model, use_cuda)
             smoother = SmoothBox(SMOOTH_ALPHA, MAX_SPEED, MISS_TOLERANCE)
             frame_idx = 0
+            last_progress = time.perf_counter()
 
             try:
                 while True:
@@ -361,11 +433,13 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
                         b = r.boxes
                         if b is None or len(b) == 0:
                             continue
-                        for j in range(len(b)):
-                            c = float(b.conf[j].cpu())
-                            if c > best_conf:
-                                best_conf = c
-                                best_box = b.xyxy[j].cpu().numpy().tolist()
+                        # One argmax and one device-to-host box transfer. The
+                        # old per-box loop synchronised CUDA repeatedly.
+                        j = int(b.conf.argmax().item())
+                        c = float(b.conf[j].item())
+                        if c > best_conf:
+                            best_conf = c
+                            best_box = b.xyxy[j].detach().cpu().tolist()
 
                     smooth_box = smoother.update(best_box)
                     if smooth_box is not None:
@@ -376,7 +450,9 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
                     writer.write(cropped)
 
                     frame_idx += 1
-                    if frame_idx % 25 == 0:
+                    now = time.perf_counter()
+                    if now - last_progress >= GUI_PROGRESS_INTERVAL_S:
+                        last_progress = now
                         yield {"type": "progress", "phase": "crop", "video": vid_name,
                                "vid_i": vi + 1, "vid_n": n,
                                "frame": frame_idx,
