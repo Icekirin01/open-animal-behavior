@@ -856,34 +856,6 @@ def _auto_export_one(vf, od, formats):
     return "\n".join(log)
 
 
-def do_export_cur(vf, od, formats):
-    vf = S.get("cur") or vf
-    selected = _normalize_export_formats(formats)
-    if not vf or vf not in S["results"]:
-        return "❌ Run inference for a video first"
-    if not od:
-        return "❌ Choose a 'Save to' folder"
-    if not selected:
-        return "❌ Select at least one output file"
-    return "\n".join(_export_selected(vf, od, selected))
-
-
-def do_export_all(od, formats):
-    selected = _normalize_export_formats(formats)
-    vids = [v for v in S["done"] if S["results"].get(v)]
-    if not vids:
-        return "❌ Run inference first"
-    if not od:
-        return "❌ Choose a 'Save to' folder"
-    if not selected:
-        return "❌ Select at least one output file"
-
-    log = []
-    for vf in vids:
-        log.append(f"[{vf}]")
-        log.extend(_export_selected(vf, od, selected))
-    return "\n".join(log)
-
 def render_ethograms_gallery(limit=10):
     """Render up to `limit` ethogram PNGs and return one gr.update per image
     slot: visible with the PNG for produced plots, hidden for the rest. Using
@@ -958,44 +930,53 @@ def _ethogram_png(vf, od):
     runs.append((cur, st, T - st))
 
     nc = len(names)
-    fig, ax = plt.subplots(figsize=(12, max(2.2, 0.5 * n_show + 1.4)), dpi=150)
-    ax.set_facecolor("#ebebeb")
+    # Keep each behavior row comfortably tall instead of squeezing additional
+    # classes into nearly the same figure height.  The all-white canvas matches
+    # the exported reference style and the light-grey grid remains visible.
+    fig_height = max(2.8, 0.9 * n_show + 1.8)
+    fig, ax = plt.subplots(figsize=(12, fig_height), dpi=150)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
 
     for cls, start, width in runs:
         if cls not in row_of:      # skip 'other' bars entirely
             continue
         row = row_of[cls]
-        ax.broken_barh([(start, width)], (n_show - 1 - row - 0.36, 0.72),
+        ax.broken_barh([(start, width)], (n_show - 1 - row - 0.39, 0.78),
                        facecolors=CLR_PALETTE[cls % len(CLR_PALETTE)],
                        edgecolors="white", linewidth=0.4)
 
     ax.set_yticks(range(n_show))
-    ax.set_yticklabels([names[c] for c in reversed(show)], fontsize=9)
+    ax.set_yticklabels([names[c] for c in reversed(show)], fontsize=11)
     ax.set_ylim(-0.6, n_show - 0.4)
     ax.set_xlim(0, T)
-    ax.set_xlabel("Frame", fontsize=9)
-    ax.set_ylabel("Predictions", fontsize=10, fontweight="bold")
-    ax.set_title(vf, fontsize=10, fontweight="bold")
-    ax.tick_params(axis="x", labelsize=8)
-    ax.grid(axis="x", color="white", linewidth=0.8, alpha=0.9)
+    ax.set_xlabel("Frame", fontsize=11)
+    ax.set_ylabel("Predictions", fontsize=12, fontweight="bold")
+    ax.set_title(vf, fontsize=12, fontweight="bold")
+    ax.tick_params(axis="x", labelsize=10)
+    ax.grid(axis="x", color="#d9d9d9", linewidth=0.9, alpha=1.0)
     ax.set_axisbelow(True)
     for sp in ax.spines.values():
         sp.set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_visible(True)
+        ax.spines[side].set_color("#cfcfcf")
+        ax.spines[side].set_linewidth(0.8)
 
     # Secondary axis in seconds
     fps = r.get("fps") or 0
     if fps:
         sec = ax.secondary_xaxis("top", functions=(lambda x: x / fps, lambda t: t * fps))
-        sec.set_xlabel("Time (s)", fontsize=9)
-        sec.tick_params(labelsize=8)
+        sec.set_xlabel("Time (s)", fontsize=11)
+        sec.tick_params(labelsize=10)
 
     present = [c for c in sorted({c for c, _, _ in runs}) if c in row_of]
     ax.legend(handles=[Patch(facecolor=CLR_PALETTE[c % len(CLR_PALETTE)], label=names[c])
                        for c in present],
               loc="upper center", bbox_to_anchor=(0.5, -0.55),
-              ncol=min(max(len(present), 1), 4), fontsize=8, frameon=False)
+              ncol=min(max(len(present), 1), 4), fontsize=10, frameon=False)
 
-    fig.subplots_adjust(bottom=0.34, top=0.80, left=0.14, right=0.97)
+    fig.subplots_adjust(bottom=0.28, top=0.80, left=0.14, right=0.97)
     p = os.path.join(od, vf.rsplit(".", 1)[0] + "_ethogram.png")
     fig.savefig(p, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -1235,8 +1216,7 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
                 with gr.Tab("Data"):
                     with gr.Group():
                         gr.Markdown(
-                            "Selected files are saved automatically after each video finishes inference. "
-                            "Use the buttons below only when you want to export the results again."
+                            "Selected files are saved automatically after each video finishes inference."
                         )
                         exp_formats = gr.CheckboxGroup(
                             label="Output files",
@@ -1247,8 +1227,6 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
                         )
                         exp_prev = gr.HTML("<p style='color:#aaa;font-size:13px;'>Run inference first</p>")
                         out_dir = gr.Textbox(label="Save to", value=DEFAULT_OUTPUT_DIR)
-                    exp_cur = gr.Button("💾 Re-export current video", variant="primary")
-                    exp_all = gr.Button("📦 Re-export all completed videos")
                     exp_log = gr.Textbox(label="Auto-save / export log", interactive=False, lines=6)
 
                 with gr.Tab("Ethogram"):
@@ -1306,8 +1284,6 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
     prev_btn.click(lambda: do_nav("prev"), [], out9)
     next_btn.click(lambda: do_nav("next"), [], out9)
     exp_formats.change(update_export_preview, [exp_formats], [exp_prev])
-    exp_cur.click(do_export_cur, [video_dd, out_dir, exp_formats], [exp_log])
-    exp_all.click(do_export_all, [out_dir, exp_formats], [exp_log])
     eth_btn.click(do_ethogram_zip, [out_dir], [eth_file, eth_log])
 
 if __name__ == "__main__":
