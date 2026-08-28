@@ -22,7 +22,7 @@ AND mirror it to a Drive backup dir, skip already-done videos, retain the
 source cache for fast reruns, and yield throttled progress dicts for the GUI.
 """
 
-import os, glob, gc, shutil, time
+import os, glob, gc, shutil, time, hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -214,6 +214,18 @@ def _bytes_needed_for_stage(video_paths, cache_dir=LOCAL_CACHE_DIR):
     return needed
 
 
+def _cache_dir_for_source(video_dir, cache_root=LOCAL_CACHE_DIR):
+    """Give each source folder its own cache namespace.
+
+    Training and separate-validation folders may contain the same basename.
+    A short hash prevents one folder's local copy from being reused for the
+    other while keeping every staged file under ``/content/_in``.
+    """
+    source_key = os.path.normcase(os.path.abspath(video_dir))
+    digest = hashlib.sha1(source_key.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(cache_root, digest)
+
+
 def _frame_count(path):
     """Frame count of a video via cv2, or -1 if unreadable."""
     import cv2
@@ -366,7 +378,8 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
         # /content concurrently, then keep the GPU continuously fed.
         pending_paths = [src for _, src in pending]
         if pending_paths:
-            needed = _bytes_needed_for_stage(pending_paths)
+            stage_dir = _cache_dir_for_source(video_dir)
+            needed = _bytes_needed_for_stage(pending_paths, stage_dir)
             free = shutil.disk_usage("/content").free
             if needed > free * MAX_LOCAL_DISK_FRACTION:
                 raise RuntimeError(
@@ -374,7 +387,7 @@ def preprocess_folder(model_path, video_dir, local_out_dir, drive_out_dir=None,
                     f"{needed / 1e9:.1f} GB, free {free / 1e9:.1f} GB"
                 )
 
-            pool, futures = _stage_videos(pending_paths)
+            pool, futures = _stage_videos(pending_paths, stage_dir)
             staged = 0
             try:
                 for future in as_completed(futures):
