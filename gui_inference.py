@@ -32,6 +32,11 @@ DEFAULT_OUTPUT_DIR = "/content/drive/My Drive/results/"
 DEFAULT_LOCAL_MODEL_DIRS = []
 # ==================== 👆 修改以上即可 👆 ====================
 
+EXPORT_ONEHOT = "One-hot CSV (per-frame)"
+EXPORT_BORIS = "BORIS event log"
+EXPORT_ETHOGRAM = "Ethogram PNG"
+EXPORT_FORMATS = [EXPORT_ONEHOT, EXPORT_BORIS, EXPORT_ETHOGRAM]
+
 VIDEO_CACHE_DIR = os.path.join(os.path.expanduser("~"), "oab_inference_cache")
 
 def cache_video_to_local(src_path, cache_dir=VIDEO_CACHE_DIR):
@@ -60,7 +65,7 @@ S = {"model": None, "cfg": None, "results": {}, "cur": None, "vr": None,
      "done": [], "idx": 0, "_active_vdir": None,
      "_cursor_data": json.dumps({"T": 0, "names": [], "labels": []}),
      "model_source": None, "disabled_classes": set(),
-     "_cancel_inference": False}
+     "_cancel_inference": False, "export_formats": EXPORT_FORMATS.copy()}
 
 CLR_PALETTE    = ["#378ADD","#D85A30","#E24B4A","#7F77DD","#1D9E75","#BA7517","#888780"]
 CLR_BG_PALETTE = ["rgba(55,138,221,0.9)","rgba(216,90,48,0.9)","rgba(226,75,74,0.9)",
@@ -473,13 +478,21 @@ def html_behavior(vf):
     h += f"<div style='display:flex;gap:10px;margin-top:10px;padding-top:8px;border-top:1px solid #eee;'><div style='flex:1;background:#f7f7f7;border-radius:6px;padding:6px;text-align:center;'><div style='font-size:11px;color:#888;'>Frames</div><div style='font-size:16px;font-weight:600;'>{T:,}</div></div><div style='flex:1;background:#f7f7f7;border-radius:6px;padding:6px;text-align:center;'><div style='font-size:11px;color:#888;'>FPS</div><div style='font-size:16px;font-weight:600;'>{fps:.1f}</div></div><div style='flex:1;background:#f7f7f7;border-radius:6px;padding:6px;text-align:center;'><div style='font-size:11px;color:#888;'>Duration</div><div style='font-size:16px;font-weight:600;'>{T/fps:.1f}s</div></div></div></div>"
     return h
 
-def html_export_preview(vf, fmt):
+def _normalize_export_formats(formats):
+    """Return valid export choices in the same order as the UI."""
+    if isinstance(formats, str):
+        formats = [formats]
+    selected = set(formats or [])
+    return [fmt for fmt in EXPORT_FORMATS if fmt in selected]
+
+
+def _html_csv_preview(vf, fmt):
     r = S["results"].get(vf)
     if not r: return "<p style='color:#aaa;font-size:13px;'>Run inference first</p>"
     names = S["cfg"]["class_names"]; labels = r["frame_labels"]; fps = r["fps"]
     td = "padding:3px 6px;border-bottom:1px solid #eee;font-size:11px;font-family:monospace;"
     th = f"{td}font-weight:bold;color:#666;"
-    if fmt == "One-hot CSV (per-frame)":
+    if fmt == EXPORT_ONEHOT:
         hdr = f"<tr><td style='{th}'>frame</td>" + "".join(f"<td style='{th}'>{n[:6]}</td>" for n in names) + "</tr>"
         rows = "".join(
             f"<tr><td style='{td}'>{i}</td>" + "".join(f"<td style='{td}'>{'1' if labels[i]==ci else '0'}</td>" for ci in range(len(names))) + "</tr>"
@@ -502,8 +515,32 @@ def html_export_preview(vf, fmt):
         title = "BORIS event log preview"
     return f"<div style='margin-top:4px;'><p style='font-size:12px;color:#666;font-weight:600;margin:0 0 4px;'>{title}</p><div style='overflow-x:auto;border:1px solid #eee;border-radius:4px;'><table style='border-collapse:collapse;width:100%;'>{hdr}{rows}</table></div></div>"
 
-def update_export_preview(fmt):
-    return html_export_preview(S["cur"], fmt) if S["cur"] else "<p style='color:#aaa;'>No results</p>"
+
+def html_export_preview(vf, formats):
+    if not S["results"].get(vf):
+        return "<p style='color:#aaa;font-size:13px;'>Run inference first</p>"
+    selected = _normalize_export_formats(formats)
+    if not selected:
+        return "<p style='color:#c47f00;font-size:13px;'>Select at least one output file.</p>"
+
+    previews = []
+    for fmt in selected:
+        if fmt in (EXPORT_ONEHOT, EXPORT_BORIS):
+            previews.append(_html_csv_preview(vf, fmt))
+        elif fmt == EXPORT_ETHOGRAM:
+            previews.append(
+                "<div style='margin-top:6px;padding:8px 10px;border:1px solid #eee;"
+                "border-radius:4px;font-size:12px;color:#666;'>"
+                "<strong>Ethogram PNG</strong><br>Rendered at export time. "
+                "The Ethogram tab continues to show the visual preview.</div>"
+            )
+    return "".join(previews)
+
+
+def update_export_preview(formats):
+    selected = _normalize_export_formats(formats)
+    S["export_formats"] = selected
+    return html_export_preview(S["cur"], selected) if S["cur"] else "<p style='color:#aaa;'>No results</p>"
 
 # ====================== Display ======================
 
@@ -616,7 +653,7 @@ def _full(vf, fi=0, vd=0, vt=0):
     T = r["total_frames"]; _update_cursor(vf)
     return (html_progress(vd, vt, vf, T, T), frame_info_html(vf, fi), get_frame(vf, fi),
             html_timeline(vf), html_behavior(vf),
-            html_export_preview(vf, "One-hot CSV (per-frame)"),
+            html_export_preview(vf, S.get("export_formats", EXPORT_FORMATS)),
             nav_md(), gr.update(maximum=max(T - 1, 0), value=0), S["_cursor_data"])
 
 # ====================== Actions ======================
@@ -625,11 +662,12 @@ def cancel_inference():
     S["_cancel_inference"] = True
     return "<p style='color:#e74c3c;font-weight:600;'>⛔ Cancelling… will stop after current window.</p>"
 
-def run_single(vf, num_workers, cache_local):
+def run_single(vf, num_workers, cache_local, od, export_formats):
     S["_cancel_inference"] = False
+    S["export_formats"] = _normalize_export_formats(export_formats)
     vdir = S.get("_active_vdir")
-    if not S["model"]: yield "", "", None, "", "", "", "❌ Load model first", U, S["_cursor_data"]; return
-    if not vf or not vdir: yield "", "", None, "", "", "", "❌ Select video", U, S["_cursor_data"]; return
+    if not S["model"]: yield "", "", None, "", "", "", "❌ Load model first", U, S["_cursor_data"], ""; return
+    if not vf or not vdir: yield "", "", None, "", "", "", "❌ Select video", U, S["_cursor_data"], ""; return
     ws = S["cfg"]["backbone"]["num_frames"] if S.get("cfg") else None
 
     # Cache video to local if requested
@@ -639,13 +677,13 @@ def run_single(vf, num_workers, cache_local):
         cached = cache_video_to_local(vp)
         if cached != vp:
             infer_vdir = os.path.dirname(cached)
-            yield "<p style='font-size:13px;color:#888;'>📦 Cached to local disk</p>", U, U, U, U, U, U, U, U
+            yield "<p style='font-size:13px;color:#888;'>📦 Cached to local disk</p>", U, U, U, U, U, U, U, U, U
 
     t0 = time.perf_counter()
     result = None
     for msg in infer_video_gen(infer_vdir, vf, S["model"], S["cfg"], S["disabled_classes"]):
         if S["_cancel_inference"]:
-            yield "<p style='color:#e74c3c;font-weight:600;'>⛔ Inference cancelled.</p>", U, U, U, U, U, U, U, U
+            yield "<p style='color:#e74c3c;font-weight:600;'>⛔ Inference cancelled.</p>", U, U, U, U, U, U, U, U, U
             print(f"⛔ Inference cancelled: {vf}")
             return
         if isinstance(msg, dict): result = msg
@@ -654,26 +692,28 @@ def run_single(vf, num_workers, cache_local):
             yield html_progress(0, 1, vf, pd_, pt_,
                                 elapsed=time.perf_counter()-t0,
                                 title="Preprocessing", unit="steps",
-                                show_rate=False), U, U, U, U, U, U, U, U
+                                show_rate=False), U, U, U, U, U, U, U, U, U
         else:
             wd, wt = msg
-            yield html_progress(0, 1, vf, wd, wt, ws=ws, elapsed=time.perf_counter()-t0), U, U, U, U, U, U, U, U
+            yield html_progress(0, 1, vf, wd, wt, ws=ws, elapsed=time.perf_counter()-t0), U, U, U, U, U, U, U, U, U
     # Store result with original video path so frame preview works
     if result and cache_local:
         result["video_path"] = os.path.join(vdir, vf)
     S["results"][vf] = result
     if vf not in S["done"]: S["done"].append(vf)
-    yield _full(vf, 0, 1, 1)
+    auto_log = _auto_export_one(vf, od, export_formats)
+    yield (*_full(vf, 0, 1, 1), auto_log)
 
-def run_batch(num_workers, cache_local):
+def run_batch(num_workers, cache_local, od, export_formats):
     S["_cancel_inference"] = False
+    S["export_formats"] = _normalize_export_formats(export_formats)
     vdir = S.get("_active_vdir")
-    if not S["model"]: yield "", "", None, "", "", "", "❌ Load model first", U, S["_cursor_data"], ""; return
-    if not vdir or not os.path.isdir(vdir): yield "", "", None, "", "", "", "❌ Load videos first", U, S["_cursor_data"], ""; return
+    if not S["model"]: yield "", "", None, "", "", "", "❌ Load model first", U, S["_cursor_data"], "", ""; return
+    if not vdir or not os.path.isdir(vdir): yield "", "", None, "", "", "", "❌ Load videos first", U, S["_cursor_data"], "", ""; return
     vids = sorted([f for f in os.listdir(vdir) if _is_video(f)])
-    if not vids: yield "", "", None, "", "", "", "❌ No videos", U, S["_cursor_data"], ""; return
+    if not vids: yield "", "", None, "", "", "", "❌ No videos", U, S["_cursor_data"], "", ""; return
     ws = S["cfg"]["backbone"]["num_frames"] if S.get("cfg") else None
-    total = len(vids); blog = []
+    total = len(vids); blog = []; export_log = []
 
     # Cache all videos upfront if requested
     cache_map = {}  # vf -> cached dir
@@ -682,7 +722,7 @@ def run_batch(num_workers, cache_local):
         for ci, vf in enumerate(vids):
             if S["_cancel_inference"]:
                 blog.append(f"⛔ Cancelled during caching")
-                yield "<p style='color:#e74c3c;font-weight:600;'>⛔ Cancelled.</p>", U, U, U, U, U, U, U, U, "\n".join(blog)
+                yield "<p style='color:#e74c3c;font-weight:600;'>⛔ Cancelled.</p>", U, U, U, U, U, U, U, U, "\n".join(blog), "\n\n".join(export_log)
                 return
             vp = os.path.join(vdir, vf)
             cached = cache_video_to_local(vp)
@@ -696,13 +736,13 @@ def run_batch(num_workers, cache_local):
                                  elapsed=elapsed, title="Loading from Drive",
                                  unit="files", show_rate=False,
                                  done_label="✅ Loaded"),
-                   U, U, U, U, U, U, U, U, U)
+                   U, U, U, U, U, U, U, U, U, U)
         blog.append(f"📦 Cached {len(cache_map)} video(s) to local disk")
 
     for vi, vf in enumerate(vids):
         if S["_cancel_inference"]:
             blog.append(f"⛔ Cancelled at video {vi}/{total}")
-            yield "<p style='color:#e74c3c;font-weight:600;'>⛔ Batch cancelled.</p>", U, U, U, U, U, U, U, U, "\n".join(blog)
+            yield "<p style='color:#e74c3c;font-weight:600;'>⛔ Batch cancelled.</p>", U, U, U, U, U, U, U, U, "\n".join(blog), "\n\n".join(export_log)
             print(f"⛔ Batch inference cancelled at video {vi}/{total}")
             return
         infer_vdir = cache_map.get(vf, vdir)
@@ -711,7 +751,7 @@ def run_batch(num_workers, cache_local):
         for msg in infer_video_gen(infer_vdir, vf, S["model"], S["cfg"], S["disabled_classes"]):
             if S["_cancel_inference"]:
                 blog.append(f"⛔ Cancelled during {vf}")
-                yield "<p style='color:#e74c3c;font-weight:600;'>⛔ Batch cancelled.</p>", U, U, U, U, U, U, U, U, "\n".join(blog)
+                yield "<p style='color:#e74c3c;font-weight:600;'>⛔ Batch cancelled.</p>", U, U, U, U, U, U, U, U, "\n".join(blog), "\n\n".join(export_log)
                 print(f"⛔ Batch inference cancelled during {vf}")
                 return
             if isinstance(msg, dict): result = msg
@@ -720,25 +760,26 @@ def run_batch(num_workers, cache_local):
                 yield html_progress(vi, total, vf, pd_, pt_,
                                     elapsed=time.perf_counter()-t0,
                                     title="Preprocessing", unit="steps",
-                                    show_rate=False), U, U, U, U, U, U, U, U, U
+                                    show_rate=False), U, U, U, U, U, U, U, U, U, U
             else:
                 wd, wt = msg
-                yield html_progress(vi, total, vf, wd, wt, ws=ws, elapsed=time.perf_counter()-t0), U, U, U, U, U, U, U, U, U
+                yield html_progress(vi, total, vf, wd, wt, ws=ws, elapsed=time.perf_counter()-t0), U, U, U, U, U, U, U, U, U, U
         # Store with original path for frame preview
         if result and vf in cache_map:
             result["video_path"] = os.path.join(vdir, vf)
         S["results"][vf] = result
         if vf not in S["done"]: S["done"].append(vf)
         blog.append(f"✅ {vf} ({result['total_frames']} fr)")
+        export_log.append(_auto_export_one(vf, od, export_formats))
         S["cur"] = vf; S["vr"] = None; _update_cursor(vf)
         if vf in S["done"]: S["idx"] = S["done"].index(vf)
         T = result["total_frames"]
         yield (html_progress(vi + 1, total, vf, T, T, ws=ws, elapsed=time.perf_counter()-t0),
                frame_info_html(vf, 0), get_frame(vf, 0),
                html_timeline(vf), html_behavior(vf),
-               html_export_preview(vf, "One-hot CSV (per-frame)"),
+               html_export_preview(vf, S.get("export_formats", EXPORT_FORMATS)),
                nav_md(), gr.update(maximum=max(T - 1, 0), value=0),
-               S["_cursor_data"], "\n".join(blog))
+               S["_cursor_data"], "\n".join(blog), "\n\n".join(export_log))
 
 def on_scrub(fi):
     fi = int(fi)
@@ -763,7 +804,7 @@ def do_nav(direction):
 # ====================== Export ======================
 
 def _exp_onehot(vf, od):
-    if vf not in S["results"]: return "❌"
+    if vf not in S["results"] or not S["results"][vf]: return f"❌ {vf}: no result"
     r = S["results"][vf]; names = S["cfg"]["class_names"]; nc = len(names)
     os.makedirs(od, exist_ok=True)
     rows = [[1 if l == ci else 0 for ci in range(nc)] for l in r["frame_labels"]]
@@ -772,8 +813,9 @@ def _exp_onehot(vf, od):
     return f"✅ {p}"
 
 def _exp_boris(vf, od):
-    if vf not in S["results"]: return "❌"
+    if vf not in S["results"] or not S["results"][vf]: return f"❌ {vf}: no result"
     r = S["results"][vf]; names = S["cfg"]["class_names"]; fps = r["fps"]; L = r["frame_labels"]
+    if not L: return f"❌ {vf}: empty result"
     os.makedirs(od, exist_ok=True); evts = []; cur, st = L[0], 0
     for i in range(1, len(L)):
         if L[i] != cur:
@@ -785,14 +827,62 @@ def _exp_boris(vf, od):
     p = os.path.join(od, vf.rsplit(".", 1)[0] + "_boris.csv"); pd.DataFrame(evts).to_csv(p, index=False)
     return f"✅ {p}"
 
-def do_export_cur(vf, od, fmt):
-    vf = S["cur"]
-    if not vf: return "❌"
-    return _exp_onehot(vf, od) if fmt == "One-hot CSV (per-frame)" else _exp_boris(vf, od)
+def _export_selected(vf, od, formats):
+    """Export every selected format for one inferred video."""
+    log = []
+    for fmt in _normalize_export_formats(formats):
+        try:
+            if fmt == EXPORT_ONEHOT:
+                msg = _exp_onehot(vf, od)
+            elif fmt == EXPORT_BORIS:
+                msg = _exp_boris(vf, od)
+            else:
+                _, msg = _ethogram_png(vf, od)
+        except Exception as e:
+            msg = f"❌ {vf} · {fmt}: {type(e).__name__}: {e}"
+        log.append(msg)
+    return log
 
-def do_export_all(od, fmt):
-    if not S["done"]: return "❌"
-    return "\n".join(_exp_onehot(v, od) if fmt == "One-hot CSV (per-frame)" else _exp_boris(v, od) for v in S["done"])
+
+def _auto_export_one(vf, od, formats):
+    """Save selected outputs immediately after inference completes."""
+    selected = _normalize_export_formats(formats)
+    if not od:
+        return f"❌ Auto-save skipped for {vf}: choose a 'Save to' folder"
+    if not selected:
+        return f"⚠️ Auto-save skipped for {vf}: no output files selected"
+    log = [f"💾 Auto-save: {vf}"]
+    log.extend(_export_selected(vf, od, selected))
+    return "\n".join(log)
+
+
+def do_export_cur(vf, od, formats):
+    vf = S.get("cur") or vf
+    selected = _normalize_export_formats(formats)
+    if not vf or vf not in S["results"]:
+        return "❌ Run inference for a video first"
+    if not od:
+        return "❌ Choose a 'Save to' folder"
+    if not selected:
+        return "❌ Select at least one output file"
+    return "\n".join(_export_selected(vf, od, selected))
+
+
+def do_export_all(od, formats):
+    selected = _normalize_export_formats(formats)
+    vids = [v for v in S["done"] if S["results"].get(v)]
+    if not vids:
+        return "❌ Run inference first"
+    if not od:
+        return "❌ Choose a 'Save to' folder"
+    if not selected:
+        return "❌ Select at least one output file"
+
+    log = []
+    for vf in vids:
+        log.append(f"[{vf}]")
+        log.extend(_export_selected(vf, od, selected))
+    return "\n".join(log)
 
 def render_ethograms_gallery(limit=10):
     """Render up to `limit` ethogram PNGs and return one gr.update per image
@@ -1144,18 +1234,29 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
             with gr.Tabs():
                 with gr.Tab("Data"):
                     with gr.Group():
-                        exp_fmt = gr.Dropdown(label="Output format", choices=["One-hot CSV (per-frame)", "BORIS event log"], value="One-hot CSV (per-frame)", interactive=True)
+                        gr.Markdown(
+                            "Selected files are saved automatically after each video finishes inference. "
+                            "Use the buttons below only when you want to export the results again."
+                        )
+                        exp_formats = gr.CheckboxGroup(
+                            label="Output files",
+                            choices=EXPORT_FORMATS,
+                            value=EXPORT_FORMATS,
+                            info="Select one or more. Export creates every checked file for each video.",
+                            interactive=True,
+                        )
                         exp_prev = gr.HTML("<p style='color:#aaa;font-size:13px;'>Run inference first</p>")
                         out_dir = gr.Textbox(label="Save to", value=DEFAULT_OUTPUT_DIR)
-                    exp_cur = gr.Button("💾 Export current video", variant="primary")
-                    exp_all = gr.Button("📦 Export all (batch)")
-                    exp_log = gr.Textbox(label="Export log", interactive=False, lines=6)
+                    exp_cur = gr.Button("💾 Re-export current video", variant="primary")
+                    exp_all = gr.Button("📦 Re-export all completed videos")
+                    exp_log = gr.Textbox(label="Auto-save / export log", interactive=False, lines=6)
 
                 with gr.Tab("Ethogram"):
                     gr.Markdown(
                         "<p style='font-size:13px;color:#555;'>Ethograms appear here "
                         "automatically after inference (first 10 videos shown). "
-                        "'Other' is not plotted.</p>")
+                        "'Other' is not plotted. Select <b>Ethogram PNG</b> in the "
+                        "Data tab to save PNG files together with the selected CSV outputs.</p>")
                     _MAX_ETH = 10
                     eth_imgs = [gr.Image(visible=False, show_label=False,
                                          container=False)
@@ -1192,19 +1293,21 @@ with gr.Blocks(title="Animal Behavior Inference", theme=GREEN_THEME, css=CUSTOM_
 
     out9 = [batch_prog, info_html, frame_img, timeline_html, behavior_html, exp_prev, nav_md_out, scrubber, cursor_state]
     out10 = out9 + [batch_log_tb]
+    single_outputs = out9 + [exp_log]
+    batch_outputs = out10 + [exp_log]
 
-    run_btn.click(run_single, [video_dd, nw_in, cache_local_cb], out9) \
+    run_btn.click(run_single, [video_dd, nw_in, cache_local_cb, out_dir, exp_formats], single_outputs) \
            .then(render_ethograms_gallery, None, eth_imgs)
-    batch_btn.click(run_batch, [nw_in, cache_local_cb], out10) \
+    batch_btn.click(run_batch, [nw_in, cache_local_cb, out_dir, exp_formats], batch_outputs) \
              .then(render_ethograms_gallery, None, eth_imgs)
     cancel_btn.click(cancel_inference, [], [batch_prog])
     scrubber.input(fn=None, inputs=[scrubber, cursor_state], outputs=[scrubber], js=CURSOR_JS)
     scrubber.change(on_scrub, inputs=[scrubber], outputs=[frame_img, info_html])
     prev_btn.click(lambda: do_nav("prev"), [], out9)
     next_btn.click(lambda: do_nav("next"), [], out9)
-    exp_fmt.change(update_export_preview, [exp_fmt], [exp_prev])
-    exp_cur.click(do_export_cur, [video_dd, out_dir, exp_fmt], [exp_log])
-    exp_all.click(do_export_all, [out_dir, exp_fmt], [exp_log])
+    exp_formats.change(update_export_preview, [exp_formats], [exp_prev])
+    exp_cur.click(do_export_cur, [video_dd, out_dir, exp_formats], [exp_log])
+    exp_all.click(do_export_all, [out_dir, exp_formats], [exp_log])
     eth_btn.click(do_ethogram_zip, [out_dir], [eth_file, eth_log])
 
 if __name__ == "__main__":
